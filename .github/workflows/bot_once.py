@@ -158,11 +158,11 @@ def main():
             print(">> 손익 구간 유지 중. 포지션 홀딩.")
         return
 
-    # 3. 미보유 상태: 30분봉 신호 판별 후 진입 (09:30 ~ 14:30 사이만 진입 허용)
+  # 3. 미보유 상태: 30분봉 신호 판별 후 진입
     if "0930" <= cur_hm < "1430":
         candles = get_30m_candles(token, KODEX_200)
         if len(candles) < 20:
-            print(">> 분봉 데이터 수집 부족. 이번 회차를 건너뜁니다.")
+            print(">> 분봉 데이터 수집 부족 (주말 또는 장외 시간). 작업을 안전하게 종료합니다.")
             return
 
         cur_p = candles[-1]
