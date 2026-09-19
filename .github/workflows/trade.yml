@@ -2,7 +2,6 @@ name: KIS 30m Free Tier Bot
 
 on:
   schedule:
-    # 월~금 (UTC 기준 일~목) 한국시간 09:30 ~ 15:00 30분 단위
     - cron: '30 0 * * 1-5'
     - cron: '0 1 * * 1-5'
     - cron: '30 1 * * 1-5'
@@ -15,12 +14,12 @@ on:
     - cron: '0 5 * * 1-5'
     - cron: '30 5 * * 1-5'
     - cron: '0 6 * * 1-5'
-    - cron: '15 6 * * 1-5'  # 15:15 장마감 청산
+    - cron: '15 6 * * 1-5'
   workflow_dispatch:
 
 jobs:
   run-strategy:
-    runs-on: ubuntu-24.04  # 고정 LTS 버전으로 경고 방지
+    runs-on: ubuntu-latest
 
     steps:
     - name: 저장소 체크아웃
@@ -35,7 +34,7 @@ jobs:
       run: |
         pip install requests python-dotenv
 
-    - name: 30분봉 매매 봇 실행
+    - name: 자동 탐색 매매 스크립트 실행
       env:
         KIS_URL: ${{ secrets.KIS_URL }}
         KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
@@ -44,8 +43,6 @@ jobs:
         KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
         TZ: "Asia/Seoul"
       run: |
-        echo "=== 현재 저장소 파일 목록 ==="
-        find . -maxdepth 3 -not -path '*/.*' -o -name "*.py"
-        TARGET_FILE=$(find . -name "bot_once.py" | head -n 1)
-        echo "=== 실행할 파일 경로: $TARGET_FILE ==="
-        python "$TARGET_FILE"
+        TARGET=$(find . -name "bot_once.py" | head -n 1)
+        echo "선택된 파이썬 파일 위치: $TARGET"
+        python "$TARGET"
