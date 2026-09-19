@@ -1,0 +1,48 @@
+name: KIS 30m Free Tier Bot
+
+on:
+  schedule:
+    # 월~금 (UTC 기준 일~목) 30분 단위 실행 (한국 시간 09:30 ~ 15:00)
+    - cron: '30 0 * * 1-5'   # 한국 시간 09:30
+    - cron: '0 1 * * 1-5'    # 한국 시간 10:00
+    - cron: '30 1 * * 1-5'   # 한국 시간 10:30
+    - cron: '0 2 * * 1-5'    # 한국 시간 11:00
+    - cron: '30 2 * * 1-5'   # 한국 시간 11:30
+    - cron: '0 3 * * 1-5'    # 한국 시간 12:00
+    - cron: '30 3 * * 1-5'   # 한국 시간 12:30
+    - cron: '0 4 * * 1-5'    # 한국 시간 13:00
+    - cron: '30 4 * * 1-5'   # 한국 시간 13:30
+    - cron: '0 5 * * 1-5'    # 한국 시간 14:00
+    - cron: '30 5 * * 1-5'   # 한국 시간 14:30
+    - cron: '0 6 * * 1-5'    # 한국 시간 15:00
+    # 15:15 장 마감 강제 전량 청산
+    - cron: '15 6 * * 1-5'   # 한국 시간 15:15
+  workflow_dispatch:        # 스마트폰 앱이나 웹에서 수동 실행(테스트) 허용 버튼
+
+jobs:
+  run-strategy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 저장소 코드 체크아웃
+      uses: actions/checkout@v4
+
+    - name: 파이썬 3.11 환경 세팅
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: 필수 라이브러리 설치
+      run: |
+        pip install requests python-dotenv
+
+    - name: 30분봉 1회 매매 스크립트 실행
+      env:
+        KIS_URL: ${{ secrets.KIS_URL }}
+        KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+        KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+        KIS_CANO: ${{ secrets.KIS_CANO }}
+        KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+        TZ: "Asia/Seoul"
+      run: |
+        python bot_once.py
