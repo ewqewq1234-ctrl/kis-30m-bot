@@ -44,4 +44,4 @@ jobs:
         KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
         TZ: "Asia/Seoul"
       run: |
-        python .github/workflows/bot_once.py
+        python .github/bot_once.py
