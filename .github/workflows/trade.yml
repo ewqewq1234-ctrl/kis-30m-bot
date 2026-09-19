@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
     - name: 저장소 체크아웃
       uses: actions/checkout@v4
 
@@ -34,6 +35,14 @@ jobs:
       run: |
         pip install requests python-dotenv
 
+    - name: 파일 확인
+      run: |
+        echo "현재 위치:"
+        pwd
+        echo ""
+        echo "파일 목록:"
+        find . -maxdepth 4 -type f | sort
+
     - name: 자동 탐색 매매 스크립트 실행
       env:
         KIS_URL: ${{ secrets.KIS_URL }}
@@ -43,14 +52,13 @@ jobs:
         KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
         TZ: "Asia/Seoul"
       run: |
-        TARGET=$(find . -name "bot_once.py" | head -n 1)
-        echo "발견된 파일 경로: $TARGET"
-        python "$TARGET"
-- name: Check files
-  run: |
-    pwd
-    ls -la
-    find . -maxdepth 3 -type f | sort
+        TARGET=$(find . -name "bot_once.py" -type f | head -n 1)
 
-- name: Run bot
-  run: python bot_once.py
+        echo "발견된 파일 경로: $TARGET"
+
+        if [ -z "$TARGET" ]; then
+          echo "ERROR: bot_once.py 파일을 찾을 수 없습니다."
+          exit 1
+        fi
+
+        python "$TARGET"
