@@ -35,7 +35,7 @@ jobs:
       run: |
         pip install requests python-dotenv
 
-    - name: 매매 스크립트 실행
+    - name: 30분봉 매매 봇 실행
       env:
         KIS_URL: ${{ secrets.KIS_URL }}
         KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
@@ -44,4 +44,8 @@ jobs:
         KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
         TZ: "Asia/Seoul"
       run: |
-        python $(find . -name bot_once.py | head -n 1)
+        echo "=== 현재 저장소 파일 목록 ==="
+        find . -maxdepth 3 -not -path '*/.*' -o -name "*.py"
+        TARGET_FILE=$(find . -name "bot_once.py" | head -n 1)
+        echo "=== 실행할 파일 경로: $TARGET_FILE ==="
+        python "$TARGET_FILE"
