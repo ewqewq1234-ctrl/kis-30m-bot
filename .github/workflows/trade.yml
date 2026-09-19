@@ -43,6 +43,6 @@ jobs:
         KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
         TZ: "Asia/Seoul"
       run: |
-        TARGET=$(find . -name "bot_once.py" | head -n 1)
+        TARGET=$(find . -name "1111.py" | head -n 1)
         echo "발견된 파일 경로: $TARGET"
         python "$TARGET"
