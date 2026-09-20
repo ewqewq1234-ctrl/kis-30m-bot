@@ -41,6 +41,8 @@ jobs:
         KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
         KIS_CANO: ${{ secrets.KIS_CANO }}
         KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TZ: "Asia/Seoul"
       run: |
         TARGET=$(find . -name "bot_once.py" -type f | head -n 1)
