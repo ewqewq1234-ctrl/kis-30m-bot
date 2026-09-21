@@ -360,7 +360,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-        main()
     except Exception as err:
         print(f"[실행 오류] {err}")
         sys.exit(1)
