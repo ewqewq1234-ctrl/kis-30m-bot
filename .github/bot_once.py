@@ -15,7 +15,8 @@ KIS_URL = os.getenv("KIS_URL", "https://openapi.koreainvestment.com:9443").rstri
 KIS_APP_KEY = os.getenv("KIS_APP_KEY")
 KIS_APP_SECRET = os.getenv("KIS_APP_SECRET")
 KIS_CANO = os.getenv("KIS_CANO")
-KIS_ACNT_PRDT_CD = os.getenv("KIS_ACNT_PRDT_CD", "01")
+KIS_ACNT_PRDT_CD = (os.getenv("KIS_ACNT_PRDT_CD") or "01").strip().zfill(2)
+KIS_CANO = (os.getenv("KIS_CANO") or "").strip()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
