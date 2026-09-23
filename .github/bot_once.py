@@ -61,7 +61,7 @@ def get_access_token():
         except Exception:
             pass
 
-    print(">> [토큰] 당일 첫 실행: 신규 접근 토큰 발급 요청")
+    print(">> [토큰] 신규 토큰 발급 요청")
     url = f"{KIS_URL}/oauth2/tokenP"
     body = {
         "grant_type": "client_credentials",
@@ -127,8 +127,8 @@ def get_positions_and_balance(token):
     data = res.json()
 
     holdings = {
-        CODE_BULL: {"qty": 0, "avg_price": 0.0},
-        CODE_BEAR: {"qty": 0, "avg_price": 0.0}
+        CODE_BULL: {"qty": 0, "avg_price": 0.0, "bfdy_qty": 0},
+        CODE_BEAR: {"qty": 0, "avg_price": 0.0, "bfdy_qty": 0}
     }
     deposit = 0
     tot_evlu = 0
@@ -139,6 +139,7 @@ def get_positions_and_balance(token):
             if code in holdings:
                 holdings[code]["qty"] = int(s.get("hldg_qty", 0))
                 holdings[code]["avg_price"] = float(s.get("pchs_avg_pric", 0.0))
+                holdings[code]["bfdy_qty"] = int(s.get("bfdy_buy_qty", 0))
 
         output2 = data.get("output2", [{}])
         if output2:
@@ -151,8 +152,8 @@ def get_positions_and_balance(token):
 def send_order(token, code, qty, order_type="01", ord_dvsn="01"):
     """
     ord_dvsn:
-    - '01': 정규장 시장가 (기본)
-    - '81': 장후 시간외 종가 (15:40~16:00 청산용)
+    - '01': 시장가 (정규장 09:00~15:20)
+    - '05': 장후 시간외 종가 (15:40~16:00 전용 - KIS 공식 코드)
     """
     if qty <= 0:
         return {"rt_cd": "-1", "msg1": "수량 부족"}
@@ -209,7 +210,7 @@ def check_market_direction(token):
     return "NONE"
 
 # ==============================================================================
-# 5. 포지션 관리 및 장마감 2중 청산 시스템
+# 5. 포지션 관리
 # ==============================================================================
 def manage_position(token, code, name, holding, curr_price, deposit, total_asset):
     qty = holding["qty"]
@@ -222,7 +223,7 @@ def manage_position(token, code, name, holding, curr_price, deposit, total_asset
     # 1) 익절 도달 (+1.8%)
     if profit_ratio >= PROFIT_TARGET:
         print(f">> [{name} 익절 달성] {qty}주 시장가 매도 실행!")
-        order_res = send_order(token, code, qty, order_type="02")
+        order_res = send_order(token, code, qty, order_type="02", ord_dvsn="01")
         if order_res.get("rt_cd") == "0":
             diff = int((curr_price - avg_price) * qty)
             send_telegram(f"🎯 [{name} 익절 달성] {curr_price:,}원 매도 (+{profit_pct:.2f}% / {diff:+,}원)")
@@ -231,7 +232,7 @@ def manage_position(token, code, name, holding, curr_price, deposit, total_asset
     # 2) 손절 기준 (-0.9%)
     if profit_ratio <= STOP_LOSS:
         print(f">> [{name} 손절 기준] {qty}주 시장가 손절 실행!")
-        order_res = send_order(token, code, qty, order_type="02")
+        order_res = send_order(token, code, qty, order_type="02", ord_dvsn="01")
         if order_res.get("rt_cd") == "0":
             diff = int((curr_price - avg_price) * qty)
             send_telegram(f"🛑 [{name} 손절 실행] {curr_price:,}원 매도 ({profit_pct:.2f}% / {diff:+,}원)")
@@ -243,7 +244,7 @@ def manage_position(token, code, name, holding, curr_price, deposit, total_asset
         pyramid_budget = min(deposit, total_asset * RATIO_PYRAMID)
         pyramid_qty = int(pyramid_budget // curr_price)
         if pyramid_qty > 0:
-            order_res = send_order(token, code, pyramid_qty, order_type="01")
+            order_res = send_order(token, code, pyramid_qty, order_type="01", ord_dvsn="01")
             if order_res.get("rt_cd") == "0":
                 send_telegram(f"🔥 [{name} 불타기] {pyramid_qty}주 추가 매수 (+{profit_pct:.2f}%)")
             return
@@ -253,7 +254,7 @@ def manage_position(token, code, name, holding, curr_price, deposit, total_asset
         water_budget = min(deposit, total_asset * RATIO_WATER)
         water_qty = int(water_budget // curr_price)
         if water_qty > 0:
-            order_res = send_order(token, code, water_qty, order_type="01")
+            order_res = send_order(token, code, water_qty, order_type="01", ord_dvsn="01")
             if order_res.get("rt_cd") == "0":
                 send_telegram(f"💧 [{name} 물타기] {water_qty}주 분할 매수 ({profit_pct:.2f}%)")
             return
@@ -284,23 +285,25 @@ def main():
     print(f">> 예수금: {deposit:,}원 | 총 자산: {total_asset:,}원")
 
     # --------------------------------------------------------------------------
-    # 분기 0: [09:00 ~ 09:14] 전일 미청산 오버나잇 물량 개장 즉시 강제 청산
+    # 분기 0: [오전 개장 직후 09:00 ~ 09:14] 전일 미청산 오버나잇 물량 무조건 시장가 청산
     # --------------------------------------------------------------------------
     if "09:00" <= time_hm < "09:14":
-        print(">> [개장 직후 잔고 체크] 전일 잔여 물량 즉시 청산 시도")
+        print(">> [개장 전일 잔여 확인] 오버나잇 잔여 물량 강제 청산")
         for code, name in [(CODE_BULL, "KODEX 200"), (CODE_BEAR, "KODEX 인버스")]:
             qty = holdings[code]["qty"]
             if qty > 0:
                 res = send_order(token, code, qty, order_type="02", ord_dvsn="01")
                 if res.get("rt_cd") == "0":
-                    send_telegram(f"🚨 [개장 즉시 전일 잔고 청산] {name} {qty}주 매도 완료 (현금화)")
+                    send_telegram(f"🚨 [개장 즉시 전일 잔고 청산] {name} {qty}주 매도 완료")
+                else:
+                    send_telegram(f"⚠️ [개장 청산 실패] {name}: {res.get('msg1')}")
         return
 
     # --------------------------------------------------------------------------
-    # 분기 1: [15:00 ~ 15:20] 1차 정규장 시장가 전량 청산
+    # 분기 1: [15:00 ~ 15:20] 1차 정규장 시장가(01) 전량 청산
     # --------------------------------------------------------------------------
     if "15:00" <= time_hm <= "15:20":
-        print(">> [1차 정규장 마감 청산] 15:20 동시호가 전 시장가 전량 매도 실행")
+        print(">> [1차 정규장 마감 청산] 시장가(01) 전량 매도 실행")
         for code, name in [(CODE_BULL, "KODEX 200"), (CODE_BEAR, "KODEX 인버스")]:
             qty = holdings[code]["qty"]
             if qty > 0:
@@ -308,30 +311,36 @@ def main():
                 if res.get("rt_cd") == "0":
                     send_telegram(f"🧹 [정규장 마감 청산] {name} {qty}주 시장가 매도 완료")
                 else:
-                    send_telegram(f"⚠️ [정규장 매도 실패] {name}: {res.get('msg1')} (장후 시간외 청산으로 이관)")
+                    send_telegram(f"⚠️ [정규장 매도 실패] {name}: {res.get('msg1')} (장후 시간외 청산 대기)")
         return
 
     # --------------------------------------------------------------------------
-    # 분기 2: [15:40 ~ 16:00] 2차 장후 시간외 종가 강제 청산 (장마감 후 청산)
+    # 분기 2: [15:40 ~ 16:00] 2차 장후 시간외 종가(05) 강제 청산
     # --------------------------------------------------------------------------
     if "15:40" <= time_hm <= "16:00":
-        print(">> [2차 장마감 후 시간외 청산] 장후 시간외 종가(81)로 잔여 포지션 전량 청산")
+        print(">> [2차 장마감 후 시간외 청산] 장후 시간외 종가(05) 전량 청산")
         for code, name in [(CODE_BULL, "KODEX 200"), (CODE_BEAR, "KODEX 인버스")]:
             qty = holdings[code]["qty"]
             if qty > 0:
-                # ord_dvsn="81" -> 장후 시간외 종가 주문 (당일 종가로 즉시 체결)
-                res = send_order(token, code, qty, order_type="02", ord_dvsn="81")
+                # KIS 공식: '05'가 장후시간외 종가 주문코드
+                res = send_order(token, code, qty, order_type="02", ord_dvsn="05")
                 if res.get("rt_cd") == "0":
-                    send_telegram(f"🌙 [장후 시간외 종가 청산] {name} {qty}주 당일 종가 매도 완료 (오버나잇 원천 차단)")
+                    send_telegram(f"🌙 [장후 시간외 종가 청산] {name} {qty}주 당일 종가 매도 완료")
                 else:
                     send_telegram(f"⚠️ [장후 시간외 매도 실패] {name}: {res.get('msg1')}")
         return
 
     # --------------------------------------------------------------------------
-    # 분기 3: [16:01 이후] 최종 당일 마감 썸머리 리포트
+    # 분기 3: [16:01 이후] 최종 당일 마감 썸머리 리포트 (동적 상태 반영)
     # --------------------------------------------------------------------------
     if time_hm >= "16:01":
-        print(">> [마감 썸머리] 최종 리포트를 발송합니다.")
+        print(">> [마감 썸머리] 최종 리포트 발송")
+        total_remaining_qty = holdings[CODE_BULL]["qty"] + holdings[CODE_BEAR]["qty"]
+        if total_remaining_qty == 0:
+            status_text = "100% 현금 안전 마감 (오버나잇 없음)"
+        else:
+            status_text = f"⚠️ 미청산 잔고 보유 마감 (총 {total_remaining_qty}주 보유 - 익일 개장 즉시 청산 예정)"
+
         summary_msg = (
             f"📈 [KIS 자동매매 - 당일 복리 결산 썸머리]\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -342,7 +351,7 @@ def main():
             f"• KODEX 인버스 잔고: {holdings[CODE_BEAR]['qty']}주\n"
             f"• 현재 예수금: {deposit:,}원\n"
             f"• 총 평가자산: {total_asset:,}원\n"
-            f"• 오버나잇 상태: 100% 현금 안전 마감\n"
+            f"• 오버나잇 상태: {status_text}\n"
             f"━━━━━━━━━━━━━━━━━━━━"
         )
         send_telegram(summary_msg)
@@ -363,7 +372,7 @@ def main():
         return
 
     # --------------------------------------------------------------------------
-    # 분기 5: 신규 진입 탐색 (09:14 이후 실행 시 ~ 14:30)
+    # 분기 5: 신규 진입 탐색 (09:15 ~ 14:30)
     # --------------------------------------------------------------------------
     if not has_bull and not has_bear:
         if "09:15" <= time_hm <= "14:30":
