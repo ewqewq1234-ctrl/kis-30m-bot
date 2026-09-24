@@ -60,9 +60,8 @@ def get_access_token():
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 cached = json.load(f)
-                # 토큰 만료 시간 10분 전까지는 안전하게 재활용
                 if cached.get("expires_at", 0) > (now_ts + 600) and "token" in cached:
-                    print(">> [토큰] 유효한 캐시 토큰 재사용")
+                    print(f">> [토큰] 유효한 캐시 토큰 재사용 (경로: {CACHE_FILE})")
                     return cached["token"]
         except Exception as e:
             print(f">> [토큰] 캐시 로드 실패: {e}")
@@ -87,6 +86,7 @@ def get_access_token():
             }
             with open(CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
+            print(f">> [토큰 저장 완료] 캐시 파일 생성됨: {CACHE_FILE}")
             return token
         else:
             err_msg = f"토큰 발급 실패: {data.get('error_description', data)}"
@@ -95,7 +95,7 @@ def get_access_token():
     except Exception as e:
         send_telegram(f"토큰 발급 네트워크 오류: {e}", is_alert=True)
         raise e
-
+        
 # ==============================================================================
 # 4. KIS 시세 및 실계좌 잔고 조회
 # ==============================================================================
