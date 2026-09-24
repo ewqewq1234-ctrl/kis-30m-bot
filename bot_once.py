@@ -10,8 +10,9 @@ import pytz
 # 1. 환경 변수 및 설정값
 # ==============================================================================
 KST = pytz.timezone("Asia/Seoul")
-CACHE_FILE = "token_cache.json"
-STATE_FILE = "state.json"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CACHE_FILE = os.path.join(BASE_DIR, "token_cache.json")
+STATE_FILE = os.path.join(BASE_DIR, "state.json")
 
 KIS_URL = os.getenv("KIS_URL", "https://openapi.koreainvestment.com:9443").rstrip("/")
 KIS_APP_KEY = os.getenv("KIS_APP_KEY")
