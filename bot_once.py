@@ -10,7 +10,7 @@ import pytz
 # 1. 환경 변수 및 설정값
 # ==============================================================================
 KST = pytz.timezone("Asia/Seoul")
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, "token_cache.json")
 STATE_FILE = os.path.join(BASE_DIR, "state.json")
 
