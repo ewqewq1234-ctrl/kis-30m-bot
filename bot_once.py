@@ -3,7 +3,7 @@ import sys
 import json
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 # ==============================================================================
@@ -28,12 +28,7 @@ CODE_BEAR = "114800"   # KODEX 인버스
 
 PROFIT_TARGET = 0.018  # 익절: +1.8%
 STOP_LOSS = -0.009     # 손절: -0.9%
-PYRAMID_RATIO = 0.007  # 불타기: +0.7%
-WATER_RATIO = -0.006   # 물타기: -0.6%
-
-RATIO_BASE = 0.35      # 1차 진입: 35%
-RATIO_PYRAMID = 0.25   # 불타기: 25%
-RATIO_WATER = 0.40     # 물타기: 40%
+TIME_STOP_MINUTES = 90 # 타임스탑: 90분 (미체결/횡보 탈출)
 
 # ==============================================================================
 # 2. 텔레그램 알림 및 에러 보고
@@ -51,7 +46,7 @@ def send_telegram(message: str, is_alert: bool = False):
         print(f">> [Telegram] 전송 예외: {e}")
 
 # ==============================================================================
-# 3. 토큰 발급 및 캐시 영속화 (토큰 수명 검증 포함)
+# 3. 토큰 발급 및 캐시 영속화
 # ==============================================================================
 def get_access_token():
     now_ts = int(time.time())
@@ -95,9 +90,9 @@ def get_access_token():
     except Exception as e:
         send_telegram(f"토큰 발급 네트워크 오류: {e}", is_alert=True)
         raise e
-        
+
 # ==============================================================================
-# 4. KIS 시세 및 실계좌 잔고 조회
+# 4. KIS 시세, 잔고 및 State 동기화
 # ==============================================================================
 def get_current_price(token, code):
     url = f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
@@ -117,10 +112,23 @@ def get_current_price(token, code):
     send_telegram(f"[{code}] 시세 조회 API 실패: {data.get('msg1')}", is_alert=True)
     raise Exception(f"시세 조회 실패: {data.get('msg1')}")
 
+def load_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f">> [State] 저장 예외: {e}")
+
 def get_positions_and_balance(token):
-    """
-    증권사 원장 잔고 조회 (단일 진실 원천)
-    """
     url = f"{KIS_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
     headers = {
         "content-type": "application/json; charset=utf-8",
@@ -165,33 +173,24 @@ def get_positions_and_balance(token):
             deposit = int(output2[0].get("dnca_tot_amt", 0))
             tot_evlu = int(output2[0].get("tot_evlu_amt", 0))
 
-        # state.json 파일과 실계좌 잔고 즉각 동기화
-        sync_state_with_real_balance(holdings, deposit, tot_evlu)
+        state = load_state()
+        state.update({
+            "updated_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+            "deposit": deposit,
+            "tot_evlu": tot_evlu,
+            "holdings": holdings
+        })
+        save_state(state)
         return holdings, deposit, tot_evlu
     
     send_telegram(f"계좌 잔고 조회 API 실패: {data.get('msg1')}", is_alert=True)
     raise Exception(f"잔고 조회 실패: {data.get('msg1')}")
 
-def sync_state_with_real_balance(holdings, deposit, tot_evlu):
-    """실제 원장 상태를 state.json에 영속화"""
-    state_data = {
-        "updated_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
-        "deposit": deposit,
-        "tot_evlu": tot_evlu,
-        "holdings": holdings
-    }
-    try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state_data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f">> [State] 저장 예외: {e}")
-
 # ==============================================================================
-# 5. 주문 전송 및 실체결 검증 (핵심 안전장치)
+# 5. 주문 전송 및 실체결 검증
 # ==============================================================================
 def verify_order_execution(token, odno):
-    """체결내역 API(TTTC8001R) 호출을 통해 실제 체결 여부 및 수량 검증"""
-    time.sleep(1.5)  # 체결 반영 대기
+    time.sleep(1.5)
     url = f"{KIS_URL}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
     headers = {
         "content-type": "application/json; charset=utf-8",
@@ -209,7 +208,7 @@ def verify_order_execution(token, odno):
         "SLL_BUY_DVSN_CD": "00",
         "INQR_DVSN": "00",
         "PDNO": "",
-        "CCLD_DVSN": "01",  # 체결만 조회
+        "CCLD_DVSN": "01",
         "ORD_GNO_BRNO": "",
         "ODNO": odno,
         "INQR_DVSN_3": "00",
@@ -231,12 +230,6 @@ def verify_order_execution(token, odno):
     return 0, 0.0
 
 def execute_order(token, code, qty, order_type="01", ord_dvsn="01", action_name="주문"):
-    """
-    주문 전송 + 응답 에러 검증 + 실체결 검증 통합 함수
-    ord_dvsn:
-    - '01': 시장가 (정규장)
-    - '05': 장후 시간외 종가 (15:40~16:00 전용 - KIS 공식 코드)
-    """
     if qty <= 0:
         return False, 0, 0.0
 
@@ -262,7 +255,6 @@ def execute_order(token, code, qty, order_type="01", ord_dvsn="01", action_name=
         res = requests.post(url, headers=headers, json=body, timeout=10)
         data = res.json()
         
-        # 1) 주문 접수 실패 시 즉각 알림
         if data.get("rt_cd") != "0":
             err_msg = f"[{action_name} 접수 실패]\n종목: {code} | 수량: {qty}주\n사유: {data.get('msg1')}"
             send_telegram(err_msg, is_alert=True)
@@ -271,13 +263,11 @@ def execute_order(token, code, qty, order_type="01", ord_dvsn="01", action_name=
         odno = data["output"].get("ODNO")
         print(f">> [{action_name}] 주문 접수 성공 (주문번호: {odno}) -> 실체결 검증 시작")
 
-        # 2) 실제 체결 검증
         ccld_qty, ccld_price = verify_order_execution(token, odno)
         if ccld_qty > 0:
             print(f">> [체결 완료] {ccld_qty}주 체결 | 평균 체결단가: {ccld_price:,.0f}원")
             return True, ccld_qty, ccld_price
         else:
-            # 접수는 되었으나 미체결 상태인 경우 경고
             print(">> [주의] 주문이 접수되었으나 체결 대기 중입니다.")
             return True, qty, 0.0
 
@@ -286,9 +276,23 @@ def execute_order(token, code, qty, order_type="01", ord_dvsn="01", action_name=
         return False, 0, 0.0
 
 # ==============================================================================
-# 6. 추세 분석 (15분봉)
+# 6. 3중 복합 필터 추세 분석 (EMA 20/60, Volume, ATR)
 # ==============================================================================
-def check_market_direction(token):
+def calculate_ema(prices, period):
+    if len(prices) < period:
+        return None
+    k = 2 / (period + 1)
+    ema = sum(prices[:period]) / period
+    for price in prices[period:]:
+        ema = price * k + ema * (1 - k)
+    return ema
+
+def check_market_direction_with_triple_filters(token):
+    """
+    1) 20 EMA / 60 EMA 정배열/역배열
+    2) 거래량 필터 (직전봉 거래량 > 20봉 평균 거래량 * 1.2)
+    3) ATR(14) 필터 (직전봉 변동폭 > ATR 14)
+    """
     url = f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
     headers = {
         "content-type": "application/json; charset=utf-8",
@@ -307,67 +311,124 @@ def check_market_direction(token):
     try:
         res = requests.get(url, headers=headers, params=params, timeout=10)
         output2 = res.json().get("output2", [])
-        if len(output2) >= 2:
-            prev_close = float(output2[1].get("stck_prpr", 0))
-            curr_price = float(output2[0].get("stck_prpr", 0))
-            print(f">> [15분봉 추세] 직전봉: {prev_close:,}원 | 현재가: {curr_price:,}원")
-            if curr_price > prev_close:
-                return "UP"
-            elif curr_price < prev_close:
-                return "DOWN"
+        
+        # 60 EMA 및 20 거래량/14 ATR 계산을 위해 최소 65개 이상의 15분봉 데이터 필요
+        if len(output2) < 65:
+            print(f">> [필터 검증] 분봉 데이터 수 부족 ({len(output2)}개)")
+            return "NONE"
+
+        # output2[0]은 현재 형성 중인 미완성 봉, output2[1]부터가 완성된 직전봉
+        completed_bars = output2[1:]
+        
+        # 과거부터 최근 순으로 정렬 (인덱스 역순)
+        closes = [float(b.get("stck_prpr", 0)) for b in reversed(completed_bars)]
+        highs = [float(b.get("stck_hgpr", 0)) for b in reversed(completed_bars)]
+        lows = [float(b.get("stck_lwpr", 0)) for b in reversed(completed_bars)]
+        volumes = [float(b.get("cntg_vol", 0)) for b in reversed(completed_bars)]
+
+        last_close = float(output2[1].get("stck_prpr", 0))
+        last_high = float(output2[1].get("stck_hgpr", 0))
+        last_low = float(output2[1].get("stck_lwpr", 0))
+        last_vol = float(output2[1].get("cntg_vol", 0))
+        curr_price = float(output2[0].get("stck_prpr", 0))
+
+        # 1. 20 EMA & 60 EMA 계산
+        ema20 = calculate_ema(closes, 20)
+        ema60 = calculate_ema(closes, 60)
+
+        # 2. 거래량 20봉 평균 대비 1.2배 돌파 확인
+        vol_ma20 = sum(volumes[-20:]) / 20
+        volume_filter = last_vol >= (vol_ma20 * 1.2)
+
+        # 3. ATR(14) 계산 및 변동폭 필터
+        tr_list = []
+        for i in range(1, len(closes)):
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1])
+            )
+            tr_list.append(tr)
+        
+        atr14 = sum(tr_list[-14:]) / 14 if len(tr_list) >= 14 else 0
+        last_range = last_high - last_low
+        atr_filter = last_range >= atr14
+
+        print(f">> [3중 필터 점검] EMA20: {ema20:,.0f} | EMA60: {ema60:,.0f}")
+        print(f">> [3중 필터 점검] 직전봉 거래량: {last_vol:,} (기준: {vol_ma20 * 1.2:,.0f}) -> {volume_filter}")
+        print(f">> [3중 필터 점검] 직전봉 변동폭: {last_range:,.0f} (기준 ATR: {atr14:,.0f}) -> {atr_filter}")
+
+        if not (volume_filter and atr_filter and ema20 and ema60):
+            print(">> [3중 필터 미달] 거래량 또는 ATR 변동성 기준을 충족하지 못해 진입을 차단합니다.")
+            return "NONE"
+
+        # 상승 돌파: 20 EMA > 60 EMA (정배열) & 현재가 > 직전 완성봉 종가
+        if ema20 > ema60 and curr_price > last_close:
+            return "UP"
+
+        # 하락 이탈: 20 EMA < 60 EMA (역배열) & 현재가 < 직전 완성봉 종가
+        if ema20 < ema60 and curr_price < last_close:
+            return "DOWN"
+
     except Exception as e:
-        send_telegram(f"15분봉 조회 실패: {e}", is_alert=False)
+        send_telegram(f"3중 필터 분석 실패: {e}", is_alert=False)
+        print(f">> 15분봉 3중 필터 예외: {e}")
+
     return "NONE"
 
 # ==============================================================================
-# 7. 포지션 관리 (익절, 손절, 불타기, 물타기)
+# 7. 단일 포지션 관리 (익절, 손절, 90분 타임스탑)
 # ==============================================================================
-def manage_position(token, code, name, holding, curr_price, deposit, total_asset):
+def manage_position(token, code, name, holding, curr_price):
     qty = holding["qty"]
     avg_price = holding["avg_price"]
     profit_ratio = (curr_price - avg_price) / avg_price
     profit_pct = profit_ratio * 100
 
-    print(f">> [{name}] 보유: {qty}주 | 평단: {avg_price:,.0f}원 | 현재가: {curr_price:,}원 | 손익: {profit_pct:+.2f}%")
+    state = load_state()
+    entry_time_str = state.get("entry_time")
+    elapsed_minutes = 0
+    if entry_time_str:
+        try:
+            entry_dt = datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
+            elapsed_minutes = (datetime.now(KST) - entry_dt).total_seconds() / 60
+        except Exception:
+            pass
+
+    print(f">> [{name}] 보유: {qty}주 | 평단: {avg_price:,.0f}원 | 현재가: {curr_price:,}원 | 손익: {profit_pct:+.2f}% | 경과: {elapsed_minutes:.1f}분")
 
     # 1) 목표 익절 (+1.8%)
     if profit_ratio >= PROFIT_TARGET:
-        ok, c_qty, c_prc = execute_order(token, code, qty, order_type="02", ord_dvsn="01", action_name=f"{name} 익절")
+        ok, _, _ = execute_order(token, code, qty, order_type="02", ord_dvsn="01", action_name=f"{name} 익절")
         if ok:
             diff = int((curr_price - avg_price) * qty)
-            send_telegram(f"🎯 [{name} 익절 성공]\n• 매도가: {curr_price:,}원\n• 수익률: {profit_pct:+.2f}%\n• 실현 손익: {diff:+,}원\n• 수량: {qty}주")
+            send_telegram(f"🎯 [{name} 목표 익절 달성]\n• 매도가: {curr_price:,}원\n• 수익률: {profit_pct:+.2f}%\n• 실현 손익: {diff:+,}원\n• 보유 시간: {elapsed_minutes:.0f}분")
+            state["entry_time"] = None
+            save_state(state)
         return
 
     # 2) 원칙 손절 (-0.9%)
     if profit_ratio <= STOP_LOSS:
-        ok, c_qty, c_prc = execute_order(token, code, qty, order_type="02", ord_dvsn="01", action_name=f"{name} 칼손절")
+        ok, _, _ = execute_order(token, code, qty, order_type="02", ord_dvsn="01", action_name=f"{name} 칼손절")
         if ok:
             diff = int((curr_price - avg_price) * qty)
-            send_telegram(f"🛑 [{name} 칼손절 집행]\n• 손절가: {curr_price:,}원\n• 손실률: {profit_pct:+.2f}%\n• 손실 금액: {diff:+,}원\n• 수량: {qty}주")
+            send_telegram(f"🛑 [{name} 원칙 칼손절 집행]\n• 손절가: {curr_price:,}원\n• 손실률: {profit_pct:+.2f}%\n• 손실 금액: {diff:+,}원\n• 보유 시간: {elapsed_minutes:.0f}분")
+            state["entry_time"] = None
+            save_state(state)
         return
 
-    # 3) 불타기 피라미딩 (+0.7%)
-    calc_base_max = max(1, int((total_asset * (RATIO_BASE + 0.05)) // curr_price))
-    if profit_ratio >= PYRAMID_RATIO and qty <= calc_base_max:
-        pyramid_budget = min(deposit, total_asset * RATIO_PYRAMID)
-        pyramid_qty = int(pyramid_budget // curr_price)
-        if pyramid_qty > 0:
-            ok, c_qty, c_prc = execute_order(token, code, pyramid_qty, order_type="01", ord_dvsn="01", action_name=f"{name} 불타기")
-            if ok:
-                send_telegram(f"🔥 [{name} 불타기 추가 매수 완료]\n• 추가: {pyramid_qty}주\n• 현재 수익률: {profit_pct:+.2f}%\n• 총 보유: {qty + pyramid_qty}주")
-            return
+    # 3) 90분 타임스탑 (Time-Stop 청산)
+    if elapsed_minutes >= TIME_STOP_MINUTES:
+        print(f">> [{name}] 90분 타임스탑 기준 도달 ({elapsed_minutes:.1f}분 경과) -> 시장가 청산 집행")
+        ok, _, _ = execute_order(token, code, qty, order_type="02", ord_dvsn="01", action_name=f"{name} 90분 타임스탑 청산")
+        if ok:
+            diff = int((curr_price - avg_price) * qty)
+            send_telegram(f"⏱️ [{name} 90분 타임스탑 청산]\n• 체결가: {curr_price:,}원\n• 최종 손익: {profit_pct:+.2f}% ({diff:+,}원)\n• 사유: 횡보로 인한 자금 락업 해제")
+            state["entry_time"] = None
+            save_state(state)
+        return
 
-    # 4) 물타기 분할 매수 (-0.6%)
-    if profit_ratio <= WATER_RATIO and qty <= calc_base_max:
-        water_budget = min(deposit, total_asset * RATIO_WATER)
-        water_qty = int(water_budget // curr_price)
-        if water_qty > 0:
-            ok, c_qty, c_prc = execute_order(token, code, water_qty, order_type="01", ord_dvsn="01", action_name=f"{name} 물타기")
-            if ok:
-                send_telegram(f"💧 [{name} 물타기 분할 매수 완료]\n• 추가: {water_qty}주 (평단 방어)\n• 현재 손익률: {profit_pct:+.2f}%\n• 총 보유: {qty + water_qty}주")
-            return
-
-    print(f">> [{name}] 포지션 유지 (조건 대기)")
+    print(f">> [{name}] 포지션 유지 (익절/손절/타임스탑 대기)")
 
 # ==============================================================================
 # 8. 메인 스케줄 실행 루틴
@@ -377,7 +438,7 @@ def main():
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     time_hm = now.strftime("%H:%M")
 
-    print(f"=== [KIS 자동매매 안정화 봇 실행: {now_str}] ===")
+    print(f"=== [KIS 퀀트 트레이딩 봇 실행: {now_str}] ===")
 
     if not all([KIS_APP_KEY, KIS_APP_SECRET, KIS_CANO]):
         err_msg = "KIS 필수 환경변수(AppKey, Secret, Cano) 미설정"
@@ -392,7 +453,7 @@ def main():
     total_asset = max(deposit, tot_evlu, 100000)
 
     print(f">> KODEX 200: {bull_price:,}원 ({bull_rate:+.2f}%) | 인버스: {bear_price:,}원 ({bear_rate:+.2f}%)")
-    print(f">> 예수금: {deposit:,}원 | 총 자산: {total_asset:,}원")
+    print(f">> 예수금(100% 투입 가능): {deposit:,}원 | 총 자산: {total_asset:,}원")
 
     # --------------------------------------------------------------------------
     # 분기 0: [오전 09:00 ~ 09:14] 전일 미청산 오버나잇 잔고 개장 즉시 강제 청산
@@ -405,6 +466,9 @@ def main():
                 ok, _, _ = execute_order(token, code, qty, order_type="02", ord_dvsn="01", action_name=f"{name} 개장 강제청산")
                 if ok:
                     send_telegram(f"🚨 [개장 즉시 오버나잇 청산] {name} {qty}주 매도 완료 (현금 확보)")
+                    state = load_state()
+                    state["entry_time"] = None
+                    save_state(state)
         return
 
     # --------------------------------------------------------------------------
@@ -418,6 +482,9 @@ def main():
                 ok, _, _ = execute_order(token, code, qty, order_type="02", ord_dvsn="01", action_name=f"{name} 정규장 마감청산")
                 if ok:
                     send_telegram(f"🧹 [정규장 마감 전량 청산] {name} {qty}주 매도 완료")
+                    state = load_state()
+                    state["entry_time"] = None
+                    save_state(state)
         return
 
     # --------------------------------------------------------------------------
@@ -428,10 +495,12 @@ def main():
         for code, name in [(CODE_BULL, "KODEX 200"), (CODE_BEAR, "KODEX 인버스")]:
             qty = holdings[code]["qty"]
             if qty > 0:
-                # KIS 공식: '05'가 장후시간외 종가 주문코드
                 ok, _, _ = execute_order(token, code, qty, order_type="02", ord_dvsn="05", action_name=f"{name} 장후시간외 청산")
                 if ok:
                     send_telegram(f"🌙 [장후 시간외 종가 청산] {name} {qty}주 매도 완료")
+                    state = load_state()
+                    state["entry_time"] = None
+                    save_state(state)
         return
 
     # --------------------------------------------------------------------------
@@ -441,12 +510,12 @@ def main():
         print(">> [마감 썸머리] 최종 리포트 발송")
         total_remaining = holdings[CODE_BULL]["qty"] + holdings[CODE_BEAR]["qty"]
         if total_remaining == 0:
-            status_text = "100% 현금 안전 마감 (오버나잇 없음)"
+            status_text = "100% 현금 안전 마감 (오버나잇 제로)"
         else:
             status_text = f"⚠️ 미청산 잔고 보유 마감 (총 {total_remaining}주 보유 - 익일 개장 즉시 청산 예정)"
 
         summary_msg = (
-            f"📈 [KIS 자동매매 - 당일 복리 결산 썸머리]\n"
+            f"📈 [KIS 자동매매 - 당일 결산 썸머리]\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"• 마감 일시: {now.strftime('%Y-%m-%d %H:%M')}\n"
             f"• KODEX 200 종가: {bull_price:,}원 ({bull_rate:+.2f}%)\n"
@@ -462,41 +531,53 @@ def main():
         return
 
     # --------------------------------------------------------------------------
-    # 분기 4: 포지션 보유 중 감시 (익절/손절/불타기/물타기)
+    # 분기 4: 포지션 보유 중 감시 (단일 포지션 관리)
     # --------------------------------------------------------------------------
     has_bull = holdings[CODE_BULL]["qty"] > 0
     has_bear = holdings[CODE_BEAR]["qty"] > 0
 
     if has_bull:
-        manage_position(token, CODE_BULL, "KODEX 200", holdings[CODE_BULL], bull_price, deposit, total_asset)
+        manage_position(token, CODE_BULL, "KODEX 200", holdings[CODE_BULL], bull_price)
         return
 
     if has_bear:
-        manage_position(token, CODE_BEAR, "KODEX 인버스", holdings[CODE_BEAR], bear_price, deposit, total_asset)
+        manage_position(token, CODE_BEAR, "KODEX 인버스", holdings[CODE_BEAR], bear_price)
         return
 
     # --------------------------------------------------------------------------
-    # 분기 5: 신규 진입 탐색 (09:15 ~ 14:30)
+    # 분기 5: 신규 진입 탐색 (예수금 100% 활용 풀베팅 모델)
     # --------------------------------------------------------------------------
     if not has_bull and not has_bear:
         if "09:15" <= time_hm <= "14:30":
-            direction = check_market_direction(token)
+            direction = check_market_direction_with_triple_filters(token)
+            
+            # 예수금의 100%를 전부 투입하여 매수 가능 수량 계산
             if direction == "UP":
-                base_budget = min(deposit, total_asset * RATIO_BASE)
-                base_qty = int(base_budget // bull_price)
-                if base_qty > 0:
-                    ok, _, _ = execute_order(token, CODE_BULL, base_qty, order_type="01", ord_dvsn="01", action_name="KODEX 200 1차 진입")
+                full_qty = int(deposit // bull_price)
+                if full_qty > 0:
+                    ok, c_qty, c_prc = execute_order(token, CODE_BULL, full_qty, order_type="01", ord_dvsn="01", action_name="KODEX 200 100% 진입")
                     if ok:
-                        send_telegram(f"🚀 [상승 돌파 1차 복리 매수] KODEX 200 {base_qty}주 ({bull_price:,}원)")
+                        state = load_state()
+                        state["entry_time"] = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+                        save_state(state)
+                        send_telegram(f"🚀 [3중 필터 돌파 진입] KODEX 200 {full_qty}주 (예수금 100% 가동)\n• 진입가: {bull_price:,}원\n• 총 투입금: {full_qty * bull_price:,}원\n• 90분 타임스탑 타이머 가동")
+                else:
+                    print(f">> [예수금 부족] 현재 예수금({deposit:,}원)으로 1주도 살 수 없습니다.")
+
             elif direction == "DOWN":
-                base_budget = min(deposit, total_asset * RATIO_BASE)
-                base_qty = int(base_budget // bear_price)
-                if base_qty > 0:
-                    ok, _, _ = execute_order(token, CODE_BEAR, base_qty, order_type="01", ord_dvsn="01", action_name="KODEX 인버스 1차 진입")
+                full_qty = int(deposit // bear_price)
+                if full_qty > 0:
+                    ok, c_qty, c_prc = execute_order(token, CODE_BEAR, full_qty, order_type="01", ord_dvsn="01", action_name="KODEX 인버스 100% 진입")
                     if ok:
-                        send_telegram(f"📉 [하락 이탈 1차 복리 매수] KODEX 인버스 {base_qty}주 ({bear_price:,}원)")
+                        state = load_state()
+                        state["entry_time"] = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+                        save_state(state)
+                        send_telegram(f"📉 [3중 필터 이탈 진입] KODEX 인버스 {full_qty}주 (예수금 100% 가동)\n• 진입가: {bear_price:,}원\n• 총 투입금: {full_qty * bear_price:,}원\n• 90분 타임스탑 타이머 가동")
+                else:
+                    print(f">> [예수금 부족] 현재 예수금({deposit:,}원)으로 1주도 살 수 없습니다.")
+
             else:
-                print(">> [관망] 진입 신호 없음")
+                print(">> [관망] 3중 필터 조건을 만족하는 셋업이 없습니다.")
         else:
             print(f">> 현재 시각({time_hm})은 신규 진입 허용 시간이 아닙니다.")
 
