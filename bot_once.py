@@ -333,56 +333,124 @@ def check_market_direction_with_triple_filters(token):
         "authorization": f"Bearer {token}",
         "appkey": KIS_APP_KEY,
         "appsecret": KIS_APP_SECRET,
-        "tr_id": "FHKST03010200"
+        "tr_id": "FHKST03010200",
     }
-    params = {
-        "FID_ETC_CLS_CODE": "",
-        "FID_COND_MRKT_DIV_CODE": "J",
-        "FID_INPUT_ISCD": CODE_BULL,
-        "FID_INPUT_HOUR_1": datetime.now(KST).strftime("%H%M%S"),
-        "FID_PW_DATA_INCU_YN": "Y"
-    }
+
+    candles = []
+    input_hour = datetime.now(KST).strftime("%H%M%S")
+
+    # EMA 60 산출을 위해 최소 70개 봉이 확보될 때까지 과거 시간대로 연속 조회 (최대 3회)
+    for _ in range(3):
+        params = {
+            "FID_ETC_CLS_CODE": "",
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": CODE_BULL,
+            "FID_INPUT_HOUR_1": input_hour,
+            "FID_PW_DATA_INCU_YN": "Y",
+        }
+
+        try:
+            time.sleep(0.4)  # Rate Limit 방어
+            res = requests.get(url, headers=headers, params=params, timeout=10)
+            data = res.json()
+            out2 = data.get("output2", [])
+            if not out2:
+                break
+
+            candles.extend(out2)
+
+            # 중복 제거 (체결시간 stck_bsop_date 또는 stck_cntg_hour 기준)
+            seen = set()
+            unique_candles = []
+            for c in candles:
+                c_time = c.get("stck_cntg_hour")
+                if c_time not in seen:
+                    seen.add(c_time)
+                    unique_candles.append(c)
+            candles = unique_candles
+
+            if len(candles) >= 70:
+                break
+
+            # 직전 조회의 가장 오래된 봉 시간으로 기준 변경
+            oldest_hour = candles[-1].get("stck_cntg_hour")
+            if not oldest_hour or oldest_hour == input_hour:
+                break
+            input_hour = oldest_hour
+
+        except Exception as e:
+            print(f">> 분봉 데이터 조회 중 예외: {e}")
+            break
+
+    # KIS API 특성상 당일 캔들만 반환되는 경우 방어:
+    # 65개 미만인 경우 계산 불가로 차단하지 않고, 확보된 데이터 범위(최소 25개) 내에서 지표를 적응형으로 계산
+    if len(candles) < 25:
+        print(f">> [필터 검증] 분봉 데이터 절대 수 부족 ({len(candles)}개)")
+        return "NONE"
+
     try:
-        res = requests.get(url, headers=headers, params=params, timeout=10)
-        output2 = res.json().get("output2", [])
-        
-        if len(output2) < 65:
-            print(f">> [필터 검증] 분봉 데이터 수 부족 ({len(output2)}개)")
+        # 시간순 정렬 (과거 -> 최신순)
+        candles_sorted = list(reversed(candles))
+
+        # 현재 형성 중인 미완성 봉(최신 봉)과 직전 완성봉 분리
+        completed_bars = candles_sorted[:-1]
+        if len(completed_bars) < 20:
             return "NONE"
 
-        completed_bars = output2[1:]
-        closes = [float(b.get("stck_prpr", 0)) for b in reversed(completed_bars)]
-        highs = [float(b.get("stck_hgpr", 0)) for b in reversed(completed_bars)]
-        lows = [float(b.get("stck_lwpr", 0)) for b in reversed(completed_bars)]
-        volumes = [float(b.get("cntg_vol", 0)) for b in reversed(completed_bars)]
+        closes = [float(b.get("stck_prpr", 0)) for b in completed_bars]
+        highs = [float(b.get("stck_hgpr", 0)) for b in completed_bars]
+        lows = [float(b.get("stck_lwpr", 0)) for b in completed_bars]
+        volumes = [float(b.get("cntg_vol", 0)) for b in completed_bars]
 
-        last_close = float(output2[1].get("stck_prpr", 0))
-        last_high = float(output2[1].get("stck_hgpr", 0))
-        last_low = float(output2[1].get("stck_lwpr", 0))
-        last_vol = float(output2[1].get("cntg_vol", 0))
-        curr_price = float(output2[0].get("stck_prpr", 0))
+        last_bar = completed_bars[-1]
+        last_close = float(last_bar.get("stck_prpr", 0))
+        last_high = float(last_bar.get("stck_hgpr", 0))
+        last_low = float(last_bar.get("stck_lwpr", 0))
+        last_vol = float(last_bar.get("cntg_vol", 0))
+        curr_price = float(candles_sorted[-1].get("stck_prpr", 0))
 
-        ema20 = calculate_ema(closes, 20)
-        ema60 = calculate_ema(closes, 60)
+        # 데이터 수가 60개 미만일 경우 가용 데이터 기반 적응형 계산 방어
+        ema20_period = 20
+        ema60_period = 60 if len(closes) >= 60 else len(closes)
+
+        ema20 = calculate_ema(closes, ema20_period)
+        ema60 = calculate_ema(closes, ema60_period)
 
         vol_ma20 = sum(volumes[-20:]) / 20
         volume_filter = last_vol >= (vol_ma20 * 1.2)
 
         tr_list = []
         for i in range(1, len(closes)):
-            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1]),
+            )
             tr_list.append(tr)
-        
-        atr14 = sum(tr_list[-14:]) / 14 if len(tr_list) >= 14 else 0
+
+        atr_period = min(14, len(tr_list))
+        atr14 = sum(tr_list[-atr_period:]) / atr_period if atr_period > 0 else 0
         last_range = last_high - last_low
         atr_filter = last_range >= atr14
 
-        print(f">> [3중 필터 점검] EMA20: {ema20:,.0f} | EMA60: {ema60:,.0f}")
-        print(f">> [3중 필터 점검] 직전봉 거래량: {last_vol:,} (기준: {vol_ma20 * 1.2:,.0f}) -> {volume_filter}")
-        print(f">> [3중 필터 점검] 직전봉 변동폭: {last_range:,.0f} (기준 ATR: {atr14:,.0f}) -> {atr_filter}")
+        print(
+            f">> [3중 필터 점검] 수집봉: {len(candles)}개 | EMA20: {ema20:,.0f} |"
+            f" EMA({ema60_period}): {ema60:,.0f}"
+        )
+        print(
+            f">> [3중 필터 점검] 직전봉 거래량: {last_vol:,} (기준:"
+            f" {vol_ma20 * 1.2:,.0f}) -> {volume_filter}"
+        )
+        print(
+            f">> [3중 필터 점검] 직전봉 변동폭: {last_range:,.0f} (기준 ATR:"
+            f" {atr14:,.0f}) -> {atr_filter}"
+        )
 
         if not (volume_filter and atr_filter and ema20 and ema60):
-            print(">> [3중 필터 미달] 거래량 또는 ATR 변동성 기준을 충족하지 못해 진입을 차단합니다.")
+            print(
+                ">> [3중 필터 미달] 거래량 또는 ATR 변동성 기준을 충족하지 못해"
+                " 진입을 차단합니다."
+            )
             return "NONE"
 
         if ema20 > ema60 and curr_price > last_close:
