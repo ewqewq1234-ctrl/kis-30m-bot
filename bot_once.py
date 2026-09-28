@@ -142,7 +142,7 @@ def get_positions_and_balance(token):
         "authorization": f"Bearer {token}",
         "appkey": KIS_APP_KEY,
         "appsecret": KIS_APP_SECRET,
-        "tr_id": "TTTC8434R"
+        "tr_id": "TTTC8434R",
     }
     params = {
         "CANO": KIS_CANO,
@@ -155,43 +155,75 @@ def get_positions_and_balance(token):
         "FNCG_AMT_AUTO_RDPT_YN": "N",
         "PRCS_DVSN": "01",
         "CTX_AREA_FK100": "",
-        "CTX_AREA_NK100": ""
+        "CTX_AREA_NK100": "",
     }
-    res = requests.get(url, headers=headers, params=params, timeout=10)
-    data = res.json()
 
-    holdings = {
-        CODE_BULL: {"qty": 0, "avg_price": 0.0, "bfdy_qty": 0},
-        CODE_BEAR: {"qty": 0, "avg_price": 0.0, "bfdy_qty": 0}
-    }
-    deposit = 0
-    tot_evlu = 0
+    last_msg = ""
+    # Rate Limit 대응: 최대 3회 재시도
+    for attempt in range(1, 4):
+        time.sleep(0.6)  # 기본 안전 간격 확보
 
-    if data.get("rt_cd") == "0":
-        for s in data.get("output1", []):
-            code = s.get("pdno")
-            if code in holdings:
-                holdings[code]["qty"] = int(s.get("hldg_qty", 0))
-                holdings[code]["avg_price"] = float(s.get("pchs_avg_pric", 0.0))
-                holdings[code]["bfdy_qty"] = int(s.get("bfdy_buy_qty", 0))
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=10)
+            data = res.json()
+        except Exception as e:
+            if attempt == 3:
+                send_telegram(
+                    f"계좌 잔고 조회 통신 에러: {str(e)}", is_alert=True
+                )
+                raise e
+            time.sleep(1.0)
+            continue
 
-        output2 = data.get("output2", [{}])
-        if output2:
-            deposit = int(output2[0].get("dnca_tot_amt", 0))
-            tot_evlu = int(output2[0].get("tot_evlu_amt", 0))
+        # 1. 정상 조회 성공
+        if data.get("rt_cd") == "0":
+            holdings = {
+                CODE_BULL: {"qty": 0, "avg_price": 0.0, "bfdy_qty": 0},
+                CODE_BEAR: {"qty": 0, "avg_price": 0.0, "bfdy_qty": 0},
+            }
+            deposit = 0
+            tot_evlu = 0
 
-        state = load_state()
-        state.update({
-            "updated_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
-            "deposit": deposit,
-            "tot_evlu": tot_evlu,
-            "holdings": holdings
-        })
-        save_state(state)
-        return holdings, deposit, tot_evlu
-    
-    send_telegram(f"계좌 잔고 조회 API 실패: {data.get('msg1')}", is_alert=True)
-    raise Exception(f"잔고 조회 실패: {data.get('msg1')}")
+            for s in data.get("output1", []):
+                code = s.get("pdno")
+                if code in holdings:
+                    holdings[code]["qty"] = int(s.get("hldg_qty", 0))
+                    holdings[code]["avg_price"] = float(
+                        s.get("pchs_avg_pric", 0.0)
+                    )
+                    holdings[code]["bfdy_qty"] = int(s.get("bfdy_buy_qty", 0))
+
+            output2 = data.get("output2", [{}])
+            if output2:
+                deposit = int(output2[0].get("dnca_tot_amt", 0))
+                tot_evlu = int(output2[0].get("tot_evlu_amt", 0))
+
+            state = load_state()
+            state.update({
+                "updated_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+                "deposit": deposit,
+                "tot_evlu": tot_evlu,
+                "holdings": holdings,
+            })
+            save_state(state)
+            return holdings, deposit, tot_evlu
+
+        # 2. Rate Limit 에러 감지 시 백오프 대기 후 재시도
+        last_msg = data.get("msg1", "")
+        if "초당 거래건수" in last_msg or "초과" in last_msg:
+            wait_sec = attempt * 1.0  # 1초, 2초 점진적 대기
+            print(
+                f"⚠️ [잔고조회 제한 감지] {wait_sec}초 대기 후 재시도"
+                f" ({attempt}/3)..."
+            )
+            time.sleep(wait_sec)
+            continue
+        else:
+            # 기타 원장 오류(계좌번호 불일치 등)는 즉시 루프 중단
+            break
+
+    send_telegram(f"계좌 잔고 조회 API 실패: {last_msg}", is_alert=True)
+    raise Exception(f"잔고 조회 실패: {last_msg}")
 
 # ==============================================================================
 # 5. 주문 전송 및 실체결 검증 (TTTC8001R)
