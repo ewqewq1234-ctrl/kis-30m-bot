@@ -345,8 +345,9 @@ def check_market_direction_with_triple_filters(token):
             "FID_ETC_CLS_CODE": "",
             "FID_COND_MRKT_DIV_CODE": "J",
             "FID_INPUT_ISCD": CODE_BULL,
-            "FID_INPUT_HOUR_1": input_hour,
-            "FID_PW_DATA_INCU_YN": "Y",
+            "FID_INPUT_HOUR_1": input_hour,  # HHMMSS 포맷
+            "FID_PW_DATA_INCU_YN": "Y",      # 결번 데이터 포함 여부
+            "FID_PW_DATA_CNT": "100"         # 요청 봉 수 (최대 100~120개 지정)
         }
 
         try:
