@@ -607,8 +607,16 @@ def main():
         for code, name in [(CODE_BULL, "KODEX 200"), (CODE_BEAR, "KODEX 인버스")]:
             qty = holdings[code]["qty"]
             if qty > 0:
-                # KIS 공식 규격: '05'
-                ok, _, _ = execute_order(token, code, qty, order_type="02", ord_dvsn="05", action_name=f"{name} 장후시간외 청산")
+                # KIS 표준: 장후시간외(05) 주문 시 종가(현재가) 전달 필수
+                ok, _, _ = execute_order(
+                    token, 
+                    code, 
+                    qty, 
+                    order_type="02", 
+                    ord_dvsn="05", 
+                    price=bull_price if code == CODE_BULL else bear_price, 
+                    action_name=f"{name} 장후시간외 청산"
+                )
                 if ok:
                     send_telegram(f"🌙 [장후 시간외 종가 청산] {name} {qty}주 매도 완료")
                     state = load_state()
