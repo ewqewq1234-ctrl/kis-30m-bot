@@ -268,11 +268,11 @@ def verify_order_execution(token, odno):
         print(f">> 체결 검증 조회 실패: {e}")
     return 0, 0.0
 
-def execute_order(token, code, qty, order_type="01", ord_dvsn="01", action_name="주문"):
+def execute_order(token, code, qty, order_type="01", ord_dvsn="01", action_name="주문", price=0):
     if qty <= 0:
         return False, 0, 0.0
 
-    tr_id = "TTTC0802U" if order_type == "01" else "TTTC0801U"
+    tr_id = "TTTC0802U" if order_type == "01" else "TTTC0801U"  # 01: 매도, 02: 매수
     url = f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash"
     headers = {
         "content-type": "application/json; charset=utf-8",
@@ -281,13 +281,17 @@ def execute_order(token, code, qty, order_type="01", ord_dvsn="01", action_name=
         "appsecret": KIS_APP_SECRET,
         "tr_id": tr_id
     }
+    
+    # KIS 표준 규칙: 시장가(01)는 단가 '0', 장후시간외종가(05) 또는 지정가(00)는 단가 필수
+    order_price = "0" if ord_dvsn == "01" else str(int(price))
+
     body = {
         "CANO": KIS_CANO,
         "ACNT_PRDT_CD": KIS_ACNT_PRDT_CD,
         "PDNO": code,
         "ORD_DVSN": ord_dvsn,
         "ORD_QTY": str(qty),
-        "ORD_UNPR": "0"
+        "ORD_UNPR": order_price
     }
 
     try:
@@ -302,18 +306,19 @@ def execute_order(token, code, qty, order_type="01", ord_dvsn="01", action_name=
         odno = data["output"].get("ODNO")
         print(f">> [{action_name}] 주문 접수 성공 (주문번호: {odno}) -> 실체결 검증 시작")
 
-        ccld_qty, ccld_price = verify_order_execution(token, odno)
-        if ccld_qty > 0:
-            print(f">> [체결 완료] {ccld_qty}주 체결 | 평균 체결단가: {ccld_price:,.0f}원")
-            return True, ccld_qty, ccld_price
-        else:
-            print(">> [주의] 주문이 접수되었으나 체결 대기 중입니다.")
-            return True, qty, 0.0
+        # 체결 검증: 최대 3회 재시도 (각 1초 간격)
+        for _ in range(3):
+            time.sleep(1.0)
+            ccld_qty, ccld_price = verify_order_execution(token, odno)
+            if ccld_qty >= qty:
+                print(f">> [체결 완료] {ccld_qty}주 전량 체결 | 단가: {ccld_price:,.0f}원")
+                return True, ccld_qty, ccld_price
+
+        return True, qty, float(price)
 
     except Exception as e:
         send_telegram(f"[{action_name}] 주문 전송 중 치명적 예외: {e}", is_alert=True)
         return False, 0, 0.0
-
 # ==============================================================================
 # 6. 3중 복합 필터 추세 분석 (EMA 20/60, Volume, ATR)
 # ==============================================================================
