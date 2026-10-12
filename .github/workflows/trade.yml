@@ -6,13 +6,12 @@ on:
     - cron: '*/5 1-5 * * 1-5'
     - cron: '0-20/5 6 * * 1-5'
     - cron: '5 7 * * 1-5'
-  # 수동 실행 시 입력값을 받을 수 있도록 workflow_dispatch 수정
   workflow_dispatch:
     inputs:
       force_baa:
         description: 'BAA 전략 강제 실행 여부 (Y/N)'
         required: false
-        default: 'y'
+        default: 'N'
 
 jobs:
   run-bot:
