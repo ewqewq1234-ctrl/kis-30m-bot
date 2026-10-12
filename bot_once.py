@@ -134,7 +134,7 @@ def is_market_open_today(token: str) -> bool:
     return datetime.now(KST).weekday() < 5
 
 # ==============================================================================
-# 3. KIS API 시세/잔고/주문 집행 (단일 1회성 호출 보장)
+# 3. KIS API 시세/잔고/주문 집행
 # ==============================================================================
 def get_current_price(token: str, code: str):
     url = f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
@@ -222,9 +222,6 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
 # 4. 일봉 수집 및 수학적 모멘텀 스코어링 (적응형 Fallback)
 # ==============================================================================
 def get_daily_closes(token: str, code: str, target_count: int = 150) -> list:
-    """
-    연속 조회를 통해 최대 target_count개의 일봉 종가 배열 반환 (과거 -> 최신순)
-    """
     url = f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
     headers = {
         "authorization": f"Bearer {token}",
@@ -235,7 +232,7 @@ def get_daily_closes(token: str, code: str, target_count: int = 150) -> list:
     all_closes = []
     end_date = datetime.now(KST).strftime("%Y%m%d")
 
-    for _ in range(2):  # 최대 2회 연속 호출로 약 160~200영업일 확보
+    for _ in range(2):
         start_date = (datetime.strptime(end_date, "%Y%m%d") - timedelta(days=150)).strftime("%Y%m%d")
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
@@ -258,16 +255,13 @@ def get_daily_closes(token: str, code: str, target_count: int = 150) -> list:
         if len(all_closes) >= target_count:
             break
 
-        # 다음 과거 조회를 위해 기준일 갱신
         oldest_date = output[-1].get("stck_bsop_date")
         if not oldest_date or oldest_date == end_date:
             break
         end_date = (datetime.strptime(oldest_date, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
 
-    # API 반환값은 최신순이므로 과거 -> 최신순으로 뒤집기
     sorted_closes = list(reversed(all_closes))
 
-    # 데이터가 아예 없을 때의 방어
     if not sorted_closes:
         curr_p = get_current_price(token, code)
         if curr_p > 0:
@@ -276,11 +270,6 @@ def get_daily_closes(token: str, code: str, target_count: int = 150) -> list:
     return sorted_closes
 
 def calc_fast_baa(closes: list) -> float:
-    """
-    Fast BAA 모멘텀 스코어 산출 공식:
-    Sm = 16 * r(1M) + 6 * r(3M) + 2 * r(6M) + 1 * r(12M)
-    데이터 개수에 따라 1M(21일), 3M(63일), 6M(126일), 12M(252일)을 적응형으로 보정
-    """
     n = len(closes)
     if n < 2:
         return 0.0
@@ -317,7 +306,6 @@ def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
     print(f"\n--- [데이트레이딩 점검: {time_hm}] ---")
     print(f"• KODEX 200 보유: {qty}주 | 현재가: {curr_price:,}원 | 단타 배정예산: {intraday_budget:,.0f}원")
 
-    # 포지션 보유 중일 때 감시
     if qty > 0:
         avg_price = holding["avg_price"]
         profit_ratio = (curr_price - avg_price) / avg_price
@@ -346,7 +334,6 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
 
     print(f"\n=== 🛡️ [공격형 BAA 전략 정밀 진단: {time_str}] ===")
 
-    # 1. 시간 및 주기 검증
     if not ("11:00" <= time_str <= "11:25"):
         if force_run:
             print(f">> ⚠️ [BAA 강제 실행 모드] 시간 제한을 우회하여 스코어링 및 즉시 매수를 진행합니다.")
@@ -361,7 +348,6 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
             print(f">> [BAA 대기] 최근 리밸런싱일로부터 {days_passed}일 경과 (최소 13일 필요).")
             return
 
-    # 2. 카나리아 자산 4종 점검
     print(">> [1단계: 4대 카나리아 모멘텀 점검]")
     is_defense = False
     canary_logs = []
@@ -376,7 +362,6 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
 
     target_code, target_name = None, None
 
-    # 3. 공격 자산군 점검 (카나리아 전체 양수일 때)
     if not is_defense:
         print(">> [2단계: 공격 자산 모멘텀 및 60/200일선 추세 필터]")
         scores = {}
@@ -400,7 +385,6 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
             print("   🚨 모든 공격 자산이 이평선 필터를 탈락하여 수비 모드로 자동 전환합니다.")
             is_defense = True
 
-    # 4. 수비 자산군 점검 (카나리아 경고 또는 공격 자산 탈락 시)
     if is_defense:
         print(">> [2단계: 수비 자산 모멘텀 랭킹]")
         scores = {}
@@ -414,7 +398,6 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
         target_name = DEFENSE_UNIVERSE[target_code]
         print(f"   🛡️ 최종 수비 타깃 선정: {target_name} ({target_code}, 스코어: {scores[target_code]:.2f})")
 
-    # 5. 예산 및 주문 수량 정밀 산출
     reinvest_amt = state.get("reinvest_pool", 0)
     base_budget = total_asset * 0.70
     total_budget = base_budget + reinvest_amt
@@ -424,22 +407,20 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
     if curr_target_price <= 0:
         curr_target_price = get_current_price(token, target_code)
 
-    # 20/60 EMA 정배열 여부에 따른 비중 조절 (정배열 시 100%, 혼조 시 50%)
     ema20 = sum(target_closes[-min(20, len(target_closes)):]) / min(20, len(target_closes))
     ema60 = sum(target_closes[-min(60, len(target_closes)):]) / min(60, len(target_closes))
     is_bull = ema20 >= ema60
 
     target_stage_budget = total_budget if is_bull else (total_budget * 0.50)
-    # 실제 예수금을 초과하지 않도록 캡 적용
     usable_cash = min(float(deposit), float(target_stage_budget))
     target_total_qty = int(usable_cash // curr_target_price) if curr_target_price > 0 else 0
     current_holding_qty = holdings.get(target_code, {}).get("qty", 0)
     qty_diff = target_total_qty - current_holding_qty
 
+    # [수정] 오타 교정 완료: 따옴표 누락 해결
     print(f"\n• 타깃 현재가: {curr_target_price:,.0f}원 | 20/60 추세: {'정배열' if is_bull else '역배열'}")
-    print(f• 가용 예산: {target_stage_budget:,.0f}원 | 주문 가능 수량: {target_total_qty}주 (현재 보유: {current_holding_qty}주) -> 매수 필요: {qty_diff}주")
+    print(f"• 가용 예산: {target_stage_budget:,.0f}원 | 주문 가능 수량: {target_total_qty}주 (현재 보유: {current_holding_qty}주) -> 매수 필요: {qty_diff}주")
 
-    # 6. 진단 결과 텔레그램 발송
     diag_msg = (
         f"📊 <b>[공격형 BAA 전략 정밀 진단]</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -453,14 +434,14 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
     )
     send_telegram(diag_msg)
 
-    # 7. 비타깃 자산 교체 매도 (KODEX 200 단타 수량은 보존)
+    # 타깃이 아닌 타 BAA 종목 매도 (KODEX 200 단타 수량은 보존)
     for h_code, item in holdings.items():
         if h_code != target_code and h_code != CODE_BULL:
             print(f">> [BAA 교체 매도] {item['name']} ({item['qty']}주)")
             execute_order(token, h_code, item["qty"], order_type="01", action_name=f"BAA 매도({item['name']})")
             time.sleep(1.0)
 
-    # 8. 목표 타깃 자산 매수 실행
+    # 목표 타깃 자산 매수 실행
     if qty_diff > 0:
         ok, executed_q = execute_order(token, target_code, qty_diff, order_type="02", action_name=f"BAA 매수({target_name})")
         if ok:
@@ -503,13 +484,11 @@ def main():
     total_asset = max(deposit, tot_eval)
     print(f">> 계좌 예수금: {deposit:,}원 | 총 평가자산: {total_asset:,}원 | 보유종목수: {len(holdings)}개")
 
-    # 1. 데이트레이딩 루틴
     try:
         run_intraday(token, holdings, deposit, total_asset)
     except Exception as e:
         print(f">> 데이트레이딩 루틴 예외: {e}")
 
-    # 2. 공격형 BAA 전략 루틴
     try:
         run_baa(token, holdings, deposit, total_asset, force_run=force_baa_flag)
     except Exception as e:
