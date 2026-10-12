@@ -1,62 +1,44 @@
-name: KIS 15m Automated Trading Bot
+name: Quant Trading Bot
 
 on:
   schedule:
-    # 1) 09:14 첫 기상 (GitHub 딜레이 감안 시 약 09:19 실행되어 첫 15분봉 완성 즉시 대응) -> UTC 00:14
-    - cron: '14 0 * * 1-5'
-
-    # 2) 09:30 ~ 14:45 (15분 주기 매매 감시 및 불타기/물타기/익절/손절) -> UTC 00:30 ~ 05:45
-    - cron: '30,45 0 * * 1-5'
-    - cron: '0,15,30,45 1-5 * * 1-5'
-
-    # 3) 15:05, 15:10 (정규장 1차 전량 시장가 청산 - 15:20 동시호가 전 매도) -> UTC 06:05, 06:10
-    - cron: '5,10 6 * * 1-5'
-
-    # 4) 15:45 (2차 장후 시간외 종가 '05' 강제 청산 - 장마감 후 완벽 청산) -> UTC 06:45
-    - cron: '45 6 * * 1-5'
-
-    # 5) 16:05 (최종 당일 마감 썸머리 리포트 발송) -> UTC 07:05
+    # 한국시간 09:15 ~ 15:20 (UTC 00:15 ~ 06:20) 5분 주기 실행
+    - cron: '15-59/5 0 * * 1-5'
+    - cron: '*/5 1-5 * * 1-5'
+    - cron: '0-20/5 6 * * 1-5'
+    # 16:05 (UTC 07:05) 당일 결산 및 마감 보고서 발송 전용
     - cron: '5 7 * * 1-5'
-
-  workflow_dispatch: # Actions 탭에서 수동 실행 버튼 지원
+  workflow_dispatch:
 
 jobs:
-  trade:
+  run-bot:
     runs-on: ubuntu-latest
-
     steps:
-      # 1. 저장소 파일 체크아웃
-      - name: 저장소 체크아웃
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 2. 파이썬 환경 구성
-      - name: Python 환경 설정
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
-      # 3. 필수 라이브러리 설치
-      - name: 라이브러리 설치
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests pytz
+      - name: Install Packages
+        run: pip install requests pytz
 
-      # 4. 한국 시간(KST) 기준 오늘 날짜 추출 (YYYYMMDD)
-      - name: 한국 날짜 추출
-        id: get-date
-        run: echo "today=$(TZ='Asia/Seoul' date +'%Y%m%d')" >> $GITHUB_OUTPUT
-
-      # 5. 당일 발급된 토큰 캐시 복원 및 저장 (매번 새 토큰 발급 방지)
-      - name: 토큰 캐시 복원 및 영속화
+      - name: 전략 상태 및 손익 히스토리 캐시 복원
         uses: actions/cache@v4
         with:
-          path: token_cache.json
-          key: kis-token-${{ steps.get-date.outputs.today }}-${{ github.run_id }}
+          path: |
+            token_cache.json
+            day_state.json
+            baa_state.json
+            trade_history.json
+          key: trading-state-${{ github.run_id }}
           restore-keys: |
-            kis-token-${{ steps.get-date.outputs.today }}-
+            trading-state-
 
-      # 6. 트레이딩 봇 실행 (루트의 bot_once.py 직접 실행)
-      - name: 트레이딩 봇 실행
+      - name: Run bot_once.py
         env:
           KIS_URL: ${{ secrets.KIS_URL }}
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
@@ -65,6 +47,4 @@ jobs:
           KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TZ: "Asia/Seoul"
-        run: |
-          python bot_once.py
+        run: python bot_once.py
