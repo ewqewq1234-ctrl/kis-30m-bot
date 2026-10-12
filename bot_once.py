@@ -151,16 +151,9 @@ def get_account_balance(token: str):
     return holdings, deposit, tot_eval
 
 def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01", price=0, action_name="주문"):
-    """
-    order_type: "01" (매도), "02" (매수)
-    ord_dvsn: "01" (시장가)
-    """
     if qty <= 0:
         return False, 0
-    
-    # [버그 수정 완료] 매수(02)는 TTTC0802U, 매도(01)는 TTTC0801U 매핑 정상화
     tr_id = "TTTC0802U" if order_type == "02" else "TTTC0801U"
-    
     url = f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash"
     headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": tr_id}
     body = {
@@ -168,7 +161,6 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
         "ORD_DVSN": ord_dvsn, "ORD_QTY": str(qty), "ORD_UNPR": "0" if ord_dvsn == "01" else str(int(price))
     }
     res = requests.post(url, headers=headers, json=body, timeout=10).json()
-    
     if res.get("rt_cd") == "0":
         odno = res.get("output", {}).get("ODNO", "")
         print(f">> ✅ [{action_name}] 접수 성공! 종목: {code} | 수량: {qty}주 | 주문번호: {odno}")
@@ -227,7 +219,7 @@ def calc_fast_baa(closes: list) -> float:
     return (16.0 * r1) + (6.0 * r3) + (2.0 * r6) + (1.0 * r12)
 
 # ==============================================================================
-# 5. 데이트레이딩 (KODEX 200) 감시
+# 5. 데이트레이딩 (KODEX 200) 감시 - 분봉 수집 상세 로깅 개선
 # ==============================================================================
 def check_daytrade_signal(token: str) -> bool:
     url = f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
@@ -235,8 +227,9 @@ def check_daytrade_signal(token: str) -> bool:
     res = requests.get(url, headers=headers, params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": CODE_BULL, "FID_INPUT_HOUR_1": datetime.now(KST).strftime("%H%M%S"), "FID_PW_DATA_INCU_YN": "Y", "FID_PW_DATA_CNT": "100"}, timeout=10).json()
     candles = res.get("output2", [])
     
+    # [개선] 수집된 구체적인 캔들 개수를 로그에 남겨 원인 파악 용이화
     if len(candles) < 30: 
-        print(">> [단타 관망] 분봉 데이터가 충분하지 않습니다 (30개 미만).")
+        print(f">> [단타 관망] 분봉 데이터 부족 ({len(candles)}개 수집됨, 최소 30개 필요)")
         return False
 
     completed = list(reversed(candles))[:-1]
@@ -290,7 +283,6 @@ def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
                         send_telegram(f"🚀 <b>[KODEX 200 1차 진입]</b> {base_qty}주 매수 완료 (@{curr_price:,}원)")
                         break
                     else:
-                        print(f">> ⚠️ [수량 초과 의심] 1주 차감 후 재시도합니다. ({base_qty}주 -> {base_qty-1}주)")
                         base_qty -= 1
                         time.sleep(0.5)
         else:
@@ -311,23 +303,68 @@ def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
             if execute_order(token, CODE_BULL, qty, "01", action_name="칼손절")[0]:
                 send_telegram(f"🛑 <b>[KODEX 200 원칙 칼손절]</b> {profit_ratio*100:.2f}% | 손실: <b>{diff:,}원</b>")
                 save_json(DAY_STATE_FILE, {"entry_time": None, "pyramided": False})
-        elif profit_ratio >= PYRAMID_TRIGGER and not state.get("pyramided", False):
-            pyr_budget = min(float(deposit), float(intraday_budget * WEIGHT_PYRAMID)) * 0.96
-            pyr_qty = int(pyr_budget // curr_price)
-            while pyr_qty > 0:
-                ok, _ = execute_order(token, CODE_BULL, pyr_qty, "02", action_name="단타 불타기")
-                if ok:
-                    state["pyramided"] = True
-                    save_json(DAY_STATE_FILE, state)
-                    send_telegram(f"🔥 <b>[KODEX 200 불타기]</b> {pyr_qty}주 추가 진입 완료")
-                    break
-                else:
-                    pyr_qty -= 1
-                    time.sleep(0.5)
 
 # ==============================================================================
-# 6. 공격형 BAA 전략
+# 6. 공격형 BAA 전략 및 장 마감 일일 결산 리포트 추가
 # ==============================================================================
+def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
+    """
+    [신규] 장 마감 후(16:05 이후) 또는 강제 실행 시 카나리아 점검 및 BAA 진단 결과를 텔레그램으로 자동 발송
+    """
+    now = datetime.now(KST)
+    time_str = now.strftime("%H:%M")
+    
+    # 오후 4시 5분 이후이거나 강제 실행일 때만 리포트 생성
+    if not (time_str >= "16:05" or os.getenv("FORCE_BAA") == "Y"):
+        return
+
+    print(">> [일일 결산] 장 마감 카나리아 및 BAA 전략 진단 리포트를 생성합니다.")
+    
+    is_defense = False
+    canary_logs = []
+    for code, name in CANARY_UNIVERSE.items():
+        closes = get_daily_closes(token, code)
+        score = calc_fast_baa(closes)
+        canary_logs.append(f"{name}: {score:.2f}")
+        if score <= 0.0:
+            is_defense = True
+
+    scores = {}
+    if not is_defense:
+        for code, name in ATTACK_UNIVERSE.items():
+            closes = get_daily_closes(token, code)
+            score = calc_fast_baa(closes)
+            curr = closes[-1]
+            ma60 = sum(closes[-min(60, len(closes)):]) / min(60, len(closes))
+            ma200 = sum(closes[-min(200, len(closes)):]) / min(200, len(closes))
+            if curr >= ma60 and curr >= ma200:
+                scores[code] = score
+        if scores:
+            target_code = max(scores, key=scores.get)
+            target_name = ATTACK_UNIVERSE[target_code]
+        else:
+            is_defense = True
+
+    if is_defense:
+        for code, name in DEFENSE_UNIVERSE.items():
+            closes = get_daily_closes(token, code)
+            scores[code] = calc_fast_baa(closes)
+        target_code = max(scores, key=scores.get)
+        target_name = DEFENSE_UNIVERSE[target_code]
+
+    report_msg = (
+        f"📋 <b>[장 마감 전략 결산 리포트]</b>\n"
+        f"📅 날짜: {now.strftime('%Y-%m-%d')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 운용 모드: {'🛡️ 수비 모드 (Crash Defense)' if is_defense else '🚀 공격 모드 (Aggressive)'}\n"
+        f"• 선정 타깃: <b>{target_name} ({target_code})</b>\n"
+        f"• 카나리아 점검: {', '.join(canary_logs)}\n"
+        f"• 총 평가 자산: {total_asset:,.0f}원\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+    send_telegram(report_msg)
+    print(">> ✅ 장 마감 리포트 텔레그램 전송 완료.")
+
 def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_run: bool = False):
     now = datetime.now(KST)
     time_str = now.strftime("%H:%M")
@@ -484,6 +521,12 @@ def main():
         run_baa(token, holdings, deposit, total_asset, force_run=force_baa_flag)
     except Exception as e:
         print(f">> BAA 전략 루틴 예외: {e}")
+
+    # [신규] 장 마감 일일 결산 카나리아 리포트 전송 체크
+    try:
+        handle_daily_closing_report(token, holdings, total_asset)
+    except Exception as e:
+        print(f">> 장 마감 리포트 루틴 예외: {e}")
 
     print("\n>> 🏁 1회 실행 사이클이 완료되었습니다.")
 
