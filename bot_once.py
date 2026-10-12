@@ -28,7 +28,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 CODE_BULL = "069500"  # KODEX 200 (데이트레이딩 롱 전용)
 
-# 매매 파라미터
 PROFIT_TARGET = 0.012
 STOP_LOSS = -0.009
 PYRAMID_TRIGGER = 0.005
@@ -37,7 +36,6 @@ DAY_BUDGET_RATIO = 0.30
 WEIGHT_BASE = 0.50
 WEIGHT_PYRAMID = 0.50
 
-# BAA 유니버스 매핑 (국내 상장 대표 ETF)
 CANARY_UNIVERSE = {
     "360750": "TIGER 미국S&P500",
     "069500": "KODEX 200",
@@ -60,7 +58,7 @@ DEFENSE_UNIVERSE = {
 }
 
 # ==============================================================================
-# 2. 유틸리티 (텔레그램, 파일 입출력, 인증, 휴장일)
+# 2. 유틸리티
 # ==============================================================================
 def send_telegram(message: str, is_alert: bool = False):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -70,11 +68,9 @@ def send_telegram(message: str, is_alert: bool = False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": f"{prefix}{message}", "parse_mode": "HTML"}
     try:
-        res = requests.post(url, json=payload, timeout=5)
-        if res.status_code != 200:
-            print(f">> Telegram 전송 실패 응답: {res.text}")
-    except Exception as e:
-        print(f">> Telegram 통신 에러: {e}")
+        requests.post(url, json=payload, timeout=5)
+    except Exception:
+        pass
 
 def load_json(filepath: str, default: dict):
     if os.path.exists(filepath):
@@ -89,8 +85,8 @@ def save_json(filepath: str, data: dict):
     try:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f">> 파일 저장 실패 ({filepath}): {e}")
+    except Exception:
+        pass
 
 def get_access_token():
     now_ts = int(time.time())
@@ -103,32 +99,23 @@ def get_access_token():
         url,
         json={"grant_type": "client_credentials", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET},
         timeout=10
-    )
-    data = res.json()
-    if "access_token" in data:
-        token = data["access_token"]
-        save_json(CACHE_FILE, {"token": token, "expires_at": now_ts + int(data.get("expires_in", 86400))})
+    ).json()
+    if "access_token" in res:
+        token = res["access_token"]
+        save_json(CACHE_FILE, {"token": token, "expires_at": now_ts + int(res.get("expires_in", 86400))})
         return token
-    raise RuntimeError(f"토큰 발급 실패: {data}")
+    raise RuntimeError(f"토큰 발급 실패: {res}")
 
 def is_market_open_today(token: str) -> bool:
     today_str = datetime.now(KST).strftime("%Y%m%d")
     url = f"{KIS_URL}/uapi/domestic-stock/v1/quotations/chk-holiday"
-    headers = {
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": "CTCA0903R"
-    }
-    params = {"BASS_DT": today_str, "CTX_AREA_NK": "", "CTX_AREA_FK": ""}
+    headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "CTCA0903R"}
     try:
-        res = requests.get(url, headers=headers, params=params, timeout=5).json()
+        res = requests.get(url, headers=headers, params={"BASS_DT": today_str, "CTX_AREA_NK": "", "CTX_AREA_FK": ""}, timeout=5).json()
         if res.get("rt_cd") == "0":
             for item in res.get("output", []):
                 if item.get("bass_dt") == today_str:
-                    is_open = item.get("opnd_yn") == "Y"
-                    print(f">> [개장일 조회] 오늘({today_str}) 개장 여부: {is_open}")
-                    return is_open
+                    return item.get("opnd_yn") == "Y"
     except Exception:
         pass
     return datetime.now(KST).weekday() < 5
@@ -138,12 +125,7 @@ def is_market_open_today(token: str) -> bool:
 # ==============================================================================
 def get_current_price(token: str, code: str):
     url = f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
-    headers = {
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": "FHKST01010100"
-    }
+    headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHKST01010100"}
     res = requests.get(url, headers=headers, params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}, timeout=10).json()
     if res.get("rt_cd") == "0":
         return int(res["output"]["stck_prpr"])
@@ -151,67 +133,49 @@ def get_current_price(token: str, code: str):
 
 def get_account_balance(token: str):
     url = f"{KIS_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
-    headers = {
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": "TTTC8434R"
-    }
+    headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "TTTC8434R"}
     params = {
-        "CANO": KIS_CANO,
-        "ACNT_PRDT_CD": KIS_ACNT_PRDT_CD,
-        "AFHR_FLPR_YN": "N",
-        "OFL_YN": "",
-        "INQR_DVSN": "02",
-        "UNPR_DVSN": "01",
-        "FUND_STTL_ICLD_YN": "N",
-        "FNCG_AMT_AUTO_RDPT_YN": "N",
-        "PRCS_DVSN": "01",
-        "CTX_AREA_FK100": "",
-        "CTX_AREA_NK100": ""
+        "CANO": KIS_CANO, "ACNT_PRDT_CD": KIS_ACNT_PRDT_CD, "AFHR_FLPR_YN": "N", "OFL_YN": "",
+        "INQR_DVSN": "02", "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
+        "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""
     }
     res = requests.get(url, headers=headers, params=params, timeout=10).json()
     holdings = {}
     for item in res.get("output1", []):
         qty = int(item.get("hldg_qty", 0))
         if qty > 0:
-            holdings[item.get("pdno")] = {
-                "name": item.get("prdt_name"),
-                "qty": qty,
-                "avg_price": float(item.get("pchs_avg_pric", 0.0))
-            }
+            holdings[item.get("pdno")] = {"name": item.get("prdt_name"), "qty": qty, "avg_price": float(item.get("pchs_avg_pric", 0.0))}
 
     deposit = int(res.get("output2", [{}])[0].get("dnca_tot_amt", 0))
     tot_eval = int(res.get("output2", [{}])[0].get("tot_evlu_amt", 0))
     return holdings, deposit, tot_eval
 
 def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01", price=0, action_name="주문"):
+    """
+    order_type: "01" (매도), "02" (매수)
+    ord_dvsn: "01" (시장가)
+    """
     if qty <= 0:
         return False, 0
-    tr_id = "TTTC0802U" if order_type == "01" else "TTTC0801U"
+    
+    # [버그 수정 완료] 매수(02)는 TTTC0802U, 매도(01)는 TTTC0801U 매핑 정상화
+    tr_id = "TTTC0802U" if order_type == "02" else "TTTC0801U"
+    
     url = f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash"
-    headers = {
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": tr_id
-    }
+    headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": tr_id}
     body = {
-        "CANO": KIS_CANO,
-        "ACNT_PRDT_CD": KIS_ACNT_PRDT_CD,
-        "PDNO": code,
-        "ORD_DVSN": ord_dvsn,
-        "ORD_QTY": str(qty),
-        "ORD_UNPR": "0" if ord_dvsn == "01" else str(int(price))
+        "CANO": KIS_CANO, "ACNT_PRDT_CD": KIS_ACNT_PRDT_CD, "PDNO": code, 
+        "ORD_DVSN": ord_dvsn, "ORD_QTY": str(qty), "ORD_UNPR": "0" if ord_dvsn == "01" else str(int(price))
     }
     res = requests.post(url, headers=headers, json=body, timeout=10).json()
+    
     if res.get("rt_cd") == "0":
         odno = res.get("output", {}).get("ODNO", "")
         print(f">> ✅ [{action_name}] 접수 성공! 종목: {code} | 수량: {qty}주 | 주문번호: {odno}")
         return True, qty
+    
     err_msg = res.get("msg1", "알 수 없는 오류")
     print(f">> ❌ [{action_name} 실패] 종목: {code} | 사유: {err_msg}")
-    # 수량 초과로 인한 실패일 경우 상위 로직에서 재시도 하도록 에러 텔레그램은 생략 (또는 커스텀 처리)
     if "수량" not in err_msg:
         send_telegram(f"[{action_name} 실패] {code}: {err_msg}", is_alert=True)
     return False, 0
@@ -221,56 +185,35 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
 # ==============================================================================
 def get_daily_closes(token: str, code: str, target_count: int = 150) -> list:
     url = f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
-    headers = {
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": "FHKST01010400"
-    }
+    headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHKST01010400"}
     all_closes = []
     end_date = datetime.now(KST).strftime("%Y%m%d")
 
     for _ in range(2):
         start_date = (datetime.strptime(end_date, "%Y%m%d") - timedelta(days=150)).strftime("%Y%m%d")
-        params = {
-            "FID_COND_MRKT_DIV_CODE": "J",
-            "FID_INPUT_ISCD": code,
-            "FID_INPUT_DATE_1": start_date,
-            "FID_INPUT_DATE_2": end_date,
-            "FID_PERIOD_DIV_CODE": "D",
-            "FID_ORG_ADJ_PRC": "0"
-        }
+        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": start_date, "FID_INPUT_DATE_2": end_date, "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"}
         time.sleep(0.1)
         res = requests.get(url, headers=headers, params=params, timeout=10).json()
         output = res.get("output", [])
-        if not output:
-            break
+        if not output: break
 
         for c in output:
-            if c.get("stck_clpr"):
-                all_closes.append(float(c["stck_clpr"]))
-
-        if len(all_closes) >= target_count:
-            break
+            if c.get("stck_clpr"): all_closes.append(float(c["stck_clpr"]))
+        if len(all_closes) >= target_count: break
 
         oldest_date = output[-1].get("stck_bsop_date")
-        if not oldest_date or oldest_date == end_date:
-            break
+        if not oldest_date or oldest_date == end_date: break
         end_date = (datetime.strptime(oldest_date, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
 
     sorted_closes = list(reversed(all_closes))
     if not sorted_closes:
         curr_p = get_current_price(token, code)
-        if curr_p > 0:
-            sorted_closes = [float(curr_p)]
-
+        if curr_p > 0: sorted_closes = [float(curr_p)]
     return sorted_closes
 
 def calc_fast_baa(closes: list) -> float:
     n = len(closes)
-    if n < 2:
-        return 0.0
-
+    if n < 2: return 0.0
     curr = closes[-1]
     p_1m = closes[-min(21, n)]
     p_3m = closes[-min(63, n)]
@@ -281,9 +224,7 @@ def calc_fast_baa(closes: list) -> float:
     r3 = (curr - p_3m) / p_3m if p_3m > 0 else 0.0
     r6 = (curr - p_6m) / p_6m if p_6m > 0 else 0.0
     r12 = (curr - p_12m) / p_12m if p_12m > 0 else 0.0
-
-    score = (16.0 * r1) + (6.0 * r3) + (2.0 * r6) + (1.0 * r12)
-    return score
+    return (16.0 * r1) + (6.0 * r3) + (2.0 * r6) + (1.0 * r12)
 
 # ==============================================================================
 # 5. 데이트레이딩 (KODEX 200) 감시
@@ -305,7 +246,6 @@ def check_daytrade_signal(token: str) -> bool:
     ema20 = sum(closes[-20:]) / 20
     ema60 = sum(closes[-60:]) / 60 if len(closes) >= 60 else sum(closes) / len(closes)
     vol_ma20 = sum(volumes[-20:]) / 20
-    
     last_close = float(completed[-1]["stck_prpr"])
     last_vol = float(completed[-1]["cntg_vol"])
     curr_price = float(list(reversed(candles))[-1]["stck_prpr"])
@@ -330,8 +270,7 @@ def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
     holding = holdings.get(CODE_BULL, {"qty": 0, "avg_price": 0.0})
     qty = holding["qty"]
     curr_price = get_current_price(token, CODE_BULL)
-    if curr_price == 0:
-        return
+    if curr_price == 0: return
 
     state = load_json(DAY_STATE_FILE, {"entry_time": None, "pyramided": False})
     intraday_budget = total_asset * DAY_BUDGET_RATIO
@@ -339,15 +278,11 @@ def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
     print(f"\n--- [데이트레이딩 점검: {time_hm}] ---")
     print(f"• KODEX 200 보유: {qty}주 | 현재가: {curr_price:,}원 | 단타 배정예산: {intraday_budget:,.0f}원")
 
-    # 신규 1차 진입
     if qty == 0:
         if "09:15" <= time_hm <= "14:30":
             if check_daytrade_signal(token):
-                # [적용] 증거금/수수료 안전 버퍼 96% 곱연산 적용
                 base_budget = min(float(deposit), float(intraday_budget * WEIGHT_BASE)) * 0.96
                 base_qty = int(base_budget // curr_price)
-                
-                # [적용] 1주 차감 재시도(Fallback Retry) 로직
                 while base_qty > 0:
                     ok, _ = execute_order(token, CODE_BULL, base_qty, "02", action_name="단타 1차 매수")
                     if ok:
@@ -364,7 +299,6 @@ def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
         avg_price = holding["avg_price"]
         profit_ratio = (curr_price - avg_price) / avg_price
         diff = int((curr_price - avg_price) * qty)
-        print(f"• 포지션 평가손익: {profit_ratio*100:+.2f}% ({diff:+,}원)")
 
         if profit_ratio >= PROFIT_TARGET:
             if execute_order(token, CODE_BULL, qty, "01", action_name="목표익절")[0]:
@@ -378,10 +312,8 @@ def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
                 send_telegram(f"🛑 <b>[KODEX 200 원칙 칼손절]</b> {profit_ratio*100:.2f}% | 손실: <b>{diff:,}원</b>")
                 save_json(DAY_STATE_FILE, {"entry_time": None, "pyramided": False})
         elif profit_ratio >= PYRAMID_TRIGGER and not state.get("pyramided", False):
-            # [적용] 증거금/수수료 안전 버퍼 96% 적용 및 불타기 재시도 로직
             pyr_budget = min(float(deposit), float(intraday_budget * WEIGHT_PYRAMID)) * 0.96
             pyr_qty = int(pyr_budget // curr_price)
-            
             while pyr_qty > 0:
                 ok, _ = execute_order(token, CODE_BULL, pyr_qty, "02", action_name="단타 불타기")
                 if ok:
@@ -390,7 +322,6 @@ def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
                     send_telegram(f"🔥 <b>[KODEX 200 불타기]</b> {pyr_qty}주 추가 진입 완료")
                     break
                 else:
-                    print(f">> ⚠️ [수량 초과 의심] 1주 차감 후 재시도합니다. ({pyr_qty}주 -> {pyr_qty-1}주)")
                     pyr_qty -= 1
                     time.sleep(0.5)
 
@@ -440,11 +371,8 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
             curr = closes[-1]
             ma60 = sum(closes[-min(60, len(closes)):]) / min(60, len(closes))
             ma200 = sum(closes[-min(200, len(closes)):]) / min(200, len(closes))
-
             passed = (curr >= ma60 and curr >= ma200)
-            print(f"   • {name} ({code}): 스코어 {score:.2f} | 현재가 {curr:,.0f}원 -> {'통과' if passed else '이평선 미달'}")
-            if passed:
-                scores[code] = score
+            if passed: scores[code] = score
 
         if scores:
             target_code = max(scores, key=scores.get)
@@ -461,8 +389,6 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
             closes = get_daily_closes(token, code)
             score = calc_fast_baa(closes)
             scores[code] = score
-            print(f"   • {name} ({code}) [수집: {len(closes)}일]: 스코어 {score:.2f}")
-
         target_code = max(scores, key=scores.get)
         target_name = DEFENSE_UNIVERSE[target_code]
         print(f"   🛡️ 최종 수비 타깃 선정: {target_name} ({target_code}, 스코어: {scores[target_code]:.2f})")
@@ -473,14 +399,12 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
 
     target_closes = get_daily_closes(token, target_code)
     curr_target_price = target_closes[-1]
-    if curr_target_price <= 0:
-        curr_target_price = get_current_price(token, target_code)
+    if curr_target_price <= 0: curr_target_price = get_current_price(token, target_code)
 
     ema20 = sum(target_closes[-min(20, len(target_closes)):]) / min(20, len(target_closes))
     ema60 = sum(target_closes[-min(60, len(target_closes)):]) / min(60, len(target_closes))
     is_bull = ema20 >= ema60
 
-    # [적용] 증거금/수수료 안전 버퍼 96% 곱연산 적용
     target_stage_budget = total_budget if is_bull else (total_budget * 0.50)
     usable_cash = min(float(deposit), float(target_stage_budget)) * 0.96
     
@@ -489,13 +413,13 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
     qty_diff = target_total_qty - current_holding_qty
 
     print(f"\n• 타깃 현재가: {curr_target_price:,.0f}원 | 20/60 추세: {'정배열' if is_bull else '역배열'}")
-    print(f"• 가용 예산(96% 버퍼 적용): {usable_cash:,.0f}원 | 주문 가능 수량: {target_total_qty}주 (현재 보유: {current_holding_qty}주) -> 매수 필요: {qty_diff}주")
+    print(f"• 가용 예산(96% 버퍼): {usable_cash:,.0f}원 | 주문 가능 수량: {target_total_qty}주 (보유: {current_holding_qty}주) -> 필요: {qty_diff}주")
 
     diag_msg = (
         f"📊 <b>[공격형 BAA 전략 정밀 진단]</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"• 운용 모드: {'🛡️ 수비 모드 (Crash Defense)' if is_defense else '🚀 공격 모드 (Aggressive)'}\n"
-        f"• 선정 타깃: <b>{target_name} ({target_code})</b>\n"
+        f"• 운용 모드: {'🛡️ 수비 모드' if is_defense else '🚀 공격 모드'}\n"
+        f"• 선정 타깃: <b>{target_name}</b>\n"
         f"• 매수 예정: {qty_diff}주 (@{curr_target_price:,.0f}원)\n"
         f"• 총 배정예산: {total_budget:,.0f}원 (재투자 {reinvest_amt:,}원 포함)\n"
         f"━━━━━━━━━━━━━━━━━━━━"
@@ -504,11 +428,9 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
 
     for h_code, item in holdings.items():
         if h_code != target_code and h_code != CODE_BULL:
-            print(f">> [BAA 교체 매도] {item['name']} ({item['qty']}주)")
             execute_order(token, h_code, item["qty"], order_type="01", action_name=f"BAA 매도({item['name']})")
             time.sleep(1.0)
 
-    # [적용] BAA 매수 1주 차감 재시도(Fallback Retry) 로직
     while qty_diff > 0:
         ok, executed_q = execute_order(token, target_code, qty_diff, order_type="02", action_name=f"BAA 매수({target_name})")
         if ok:
@@ -544,7 +466,7 @@ def main():
 
     if not force_baa_flag:
         if not is_market_open_today(token):
-            print(f">> 🏖️ 오늘({now.strftime('%Y-%m-%d')})은 한국거래소 휴장일입니다. 안전하게 종료합니다.")
+            print(f">> 🏖️ 오늘({now.strftime('%Y-%m-%d')})은 한국거래소 휴장일입니다.")
             return
     else:
         print(">> ⏩ 강제 실행 모드이므로 휴장일 판별을 건너뛰고 계속 진행합니다.")
