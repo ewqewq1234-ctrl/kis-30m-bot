@@ -285,4 +285,57 @@ def run_baa(token: str, holdings: dict, total_asset: int):
             
     # 5. 수비 자산 점검
     if is_defense:
-        print(">> [2단계] 수
+        print(">> [2단계] 수비 자산 유니버스 진단")
+        scores = {}
+        for code, name in DEFENSE_UNIVERSE.items():
+            closes = get_daily_closes(token, code)
+            score = calc_fast_baa(closes)
+            scores[code] = score
+            print(f"  - {name}: 스코어 {score:.2f}")
+            
+        target_code = max(scores, key=scores.get)
+        target_name = DEFENSE_UNIVERSE[target_code]
+        print(f">> 🛡️ 최종 수비 타깃 선정: {target_name}")
+
+    # FORCE_BAA가 켜져 있으면 텔레그램으로도 진단 결과를 쏩니다.
+    if force_baa == "Y":
+        send_telegram(
+            f"🛠️ <b>[BAA 강제 실행 진단 결과]</b>\n"
+            f"▪ 카나리아 상태: {'🚨 붕괴 (수비전환)' if is_defense else '✅ 안전 (공격유지)'}\n"
+            f"▪ 최종 타깃 자산: {target_name} ({target_code})"
+        )
+
+    # 실제 매매 로직 (기존과 동일)
+    base_budget = total_asset * 0.70
+    total_budget = base_budget + state.get("reinvest_pool", 0)
+    target_closes = get_daily_closes(token, target_code)
+    is_bull = (sum(target_closes[-20:])/20) > (sum(target_closes[-60:])/60)
+    
+    for h_code, item in holdings.items():
+        if h_code not in (target_code, CODE_BULL):
+            execute_order(token, h_code, item["qty"], "01", action_name="BAA 교체매도")
+
+    target_budget = total_budget if is_bull else (total_budget * 0.50)
+    qty_diff = int(target_budget // target_closes[-1]) - holdings.get(target_code, {}).get("qty", 0)
+    
+    if qty_diff > 0:
+        if execute_order(token, target_code, qty_diff, "02", action_name="BAA 매수")[0]:
+            state["reinvest_pool"] = 0
+            state["last_executed_date"] = now.strftime("%Y-%m-%d")
+            save_json(BAA_STATE_FILE, state)
+
+# ==============================================================================
+# 6. 메인 오케스트레이션
+# ==============================================================================
+def main():
+    token = get_access_token()
+    if not is_market_open_today(token): return
+    
+    holdings, deposit, tot_eval = get_account_balance(token)
+    total_asset = max(deposit, tot_eval)
+
+    run_intraday(token, holdings, deposit, total_asset)
+    run_baa(token, holdings, total_asset)
+
+if __name__ == "__main__":
+    main()
