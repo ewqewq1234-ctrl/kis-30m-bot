@@ -219,15 +219,18 @@ def calc_fast_baa(closes: list) -> float:
     return (16.0 * r1) + (6.0 * r3) + (2.0 * r6) + (1.0 * r12)
 
 # ==============================================================================
-# 5. 데이트레이딩 (KODEX 200) 감시 - 분봉 수집 상세 로깅 개선
+# 5. 데이트레이딩 (KODEX 200) 감시 - 분봉 조회 안정성 강화
 # ==============================================================================
 def check_daytrade_signal(token: str) -> bool:
     url = f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
+    # [개선] 현재시각 대신 장 마감 직후 시간(예: 현재 시각이 장중이면 그대로, 아니면 153000)을 주어 데이터 수신율을 극대화
+    now_str = datetime.now(KST).strftime("%H%M%S")
+    query_hour = now_str if now_str <= "153000" else "153000"
+
     headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHKST03010200"}
-    res = requests.get(url, headers=headers, params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": CODE_BULL, "FID_INPUT_HOUR_1": datetime.now(KST).strftime("%H%M%S"), "FID_PW_DATA_INCU_YN": "Y", "FID_PW_DATA_CNT": "100"}, timeout=10).json()
+    res = requests.get(url, headers=headers, params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": CODE_BULL, "FID_INPUT_HOUR_1": query_hour, "FID_PW_DATA_INCU_YN": "Y", "FID_PW_DATA_CNT": "100"}, timeout=10).json()
     candles = res.get("output2", [])
     
-    # [개선] 수집된 구체적인 캔들 개수를 로그에 남겨 원인 파악 용이화
     if len(candles) < 30: 
         print(f">> [단타 관망] 분봉 데이터 부족 ({len(candles)}개 수집됨, 최소 30개 필요)")
         return False
@@ -305,16 +308,12 @@ def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
                 save_json(DAY_STATE_FILE, {"entry_time": None, "pyramided": False})
 
 # ==============================================================================
-# 6. 공격형 BAA 전략 및 장 마감 일일 결산 리포트 추가
+# 6. 공격형 BAA 전략 및 장 마감 일일 결산 리포트
 # ==============================================================================
 def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
-    """
-    [신규] 장 마감 후(16:05 이후) 또는 강제 실행 시 카나리아 점검 및 BAA 진단 결과를 텔레그램으로 자동 발송
-    """
     now = datetime.now(KST)
     time_str = now.strftime("%H:%M")
     
-    # 오후 4시 5분 이후이거나 강제 실행일 때만 리포트 생성
     if not (time_str >= "16:05" or os.getenv("FORCE_BAA") == "Y"):
         return
 
@@ -522,7 +521,6 @@ def main():
     except Exception as e:
         print(f">> BAA 전략 루틴 예외: {e}")
 
-    # [신규] 장 마감 일일 결산 카나리아 리포트 전송 체크
     try:
         handle_daily_closing_report(token, holdings, total_asset)
     except Exception as e:
