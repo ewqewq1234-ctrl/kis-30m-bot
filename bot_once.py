@@ -14,6 +14,7 @@ import time
 import fcntl
 import tempfile
 import html
+import subprocess
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -127,6 +128,31 @@ def load_json(filepath, default):
         raise TradeSafetyError(f"상태 파일 손상/읽기 실패: {filepath.name}: {ex}") from ex
 
 
+def durable_checkpoint(filepath):
+    """Commit and push critical state BEFORE any subsequent broker order POST.
+
+    The state checkout is a private branch. A failed push blocks execution.
+    """
+    if os.getenv("GITHUB_STATE_MODE") != "git":
+        return
+    filepath = Path(filepath).resolve()
+    if filepath.name not in {"trade_history.json", "day_state.json", "baa_state.json", "risk_state.json", "holiday_cache.json"}:
+        return
+    if filepath.parent != BASE_DIR:
+        raise TradeSafetyError("상태 파일이 지정된 영구 저장소 밖에 있습니다")
+    def git(*args):
+        result = subprocess.run(["git", "-C", str(BASE_DIR), *args], capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise TradeSafetyError(f"영구 상태 Git 작업 실패: {args[0]}: {result.stderr[-350:]}")
+        return result.stdout
+    git("add", "--", filepath.name)
+    status = git("status", "--porcelain", "--", filepath.name)
+    if status:
+        git("-c", "user.name=kis-bot", "-c", "user.email=kis-bot@users.noreply.github.com",
+            "commit", "-m", f"checkpoint {filepath.name}", "--", filepath.name)
+        git("push", "origin", "HEAD:refs/heads/bot-state")
+
+
 def save_json(filepath, data):
     filepath = Path(filepath)
     tmp_name = None
@@ -149,6 +175,7 @@ def save_json(filepath, data):
     finally:
         if tmp_name and os.path.exists(tmp_name):
             os.unlink(tmp_name)
+    durable_checkpoint(filepath)
 
 
 def fail(message):
