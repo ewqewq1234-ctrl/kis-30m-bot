@@ -1,0 +1,4 @@
+token_cache.json
+*.lock
+.bot.lock
+.tmp_*
