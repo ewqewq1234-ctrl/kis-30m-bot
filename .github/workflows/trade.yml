@@ -21,6 +21,7 @@ jobs:
       KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      KIS_TOKEN_ENCRYPTION_KEY: ${{ secrets.KIS_TOKEN_ENCRYPTION_KEY }}
       KIS_ENV: real
       DRY_RUN: 'Y'
       ENABLE_LIVE_ORDERS: 'NO'
@@ -51,15 +52,27 @@ jobs:
             git -c user.name=kis-bot -c user.email=kis-bot@users.noreply.github.com commit -m 'Initialize persistent bot state'
             git push origin HEAD:refs/heads/bot-state
           fi
-          # Keep authenticated origin for checkpoint pushes during this job.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
       - run: pip install -r requirements.txt
+      - run: python -m pip install 'cryptography>=43,<47'
       - run: python -m py_compile bot_once.py
       - run: python -m unittest -v test_bot_once.py
         env:
           GITHUB_STATE_MODE: 'off'
+      - name: Validate token encryption secret
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from cryptography.fernet import Fernet
+          key = os.environ.get('KIS_TOKEN_ENCRYPTION_KEY', '')
+          if not key:
+              raise SystemExit('KIS_TOKEN_ENCRYPTION_KEY secret missing')
+          Fernet(key.encode('ascii'))
+          print('Token encryption key configured')
+          PY
       - name: Run bot (fail closed)
         run: python bot_once.py
