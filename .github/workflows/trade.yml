@@ -1,54 +1,65 @@
-name: Quant Trading Bot
-
+name: KIS Bot Persistent State
 on:
-  schedule:
-    - cron: '15-59/5 0 * * 1-5'
-    - cron: '*/5 1-5 * * 1-5'
-    - cron: '0-20/5 6 * * 1-5'
-    - cron: '5 7 * * 1-5'
   workflow_dispatch:
-    inputs:
-      force_baa:
-        description: 'BAA 전략 강제 실행 여부 (Y/N)'
-        required: false
-        default: 'N'
-
+  schedule:
+    - cron: '*/10 0-5 * * 1-5'
+    - cron: '0,10,20,30 6 * * 1-5'
+    - cron: '10 7 * * 1-5'
+permissions:
+  contents: write
+concurrency:
+  group: kis-bot-single-account
+  cancel-in-progress: false
 jobs:
-  run-bot:
+  trade:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_CANO: ${{ secrets.KIS_CANO }}
+      KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      KIS_ENV: real
+      DRY_RUN: 'Y'
+      ENABLE_LIVE_ORDERS: 'NO'
+      FORCE_BAA: 'N'
+      GITHUB_STATE_MODE: git
+      BOT_STATE_DIR: ${{ github.workspace }}/persistent_state
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Initialize or fetch persistent state branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p persistent_state
+          cd persistent_state
+          git init -q
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads origin bot-state >/dev/null 2>&1; then
+            git fetch --depth=1 origin bot-state
+            git checkout -B bot-state FETCH_HEAD
+          else
+            git checkout --orphan bot-state
+            printf 'token_cache.json\n*.lock\n.bot.lock\n.tmp_*\n' > .gitignore
+            git add .gitignore
+            git -c user.name=kis-bot -c user.email=kis-bot@users.noreply.github.com commit -m 'Initialize persistent bot state'
+            git push origin HEAD:refs/heads/bot-state
+          fi
+          # Keep authenticated origin for checkpoint pushes during this job.
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Install Packages
-        run: pip install requests pytz
-
-      - name: Restore States & History Cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            token_cache.json
-            day_state.json
-            baa_state.json
-            trade_history.json
-          key: trading-state-${{ github.run_id }}
-          restore-keys: |
-            trading-state-
-
-      - name: Execute bot_once.py
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m py_compile bot_once.py
+      - run: python -m unittest -v test_bot_once.py
         env:
-          KIS_URL: ${{ secrets.KIS_URL }}
-          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
-          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
-          KIS_CANO: ${{ secrets.KIS_CANO }}
-          KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # 입력받은 변수를 파이썬 환경변수로 주입 (기본적으로 스케줄링 시에는 N으로 동작)
-          FORCE_BAA: ${{ github.event.inputs.force_baa || 'N' }}
+          GITHUB_STATE_MODE: 'off'
+      - name: Run bot (fail closed)
         run: python bot_once.py
