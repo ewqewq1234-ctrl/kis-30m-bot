@@ -15,6 +15,9 @@ import fcntl
 import tempfile
 import html
 import subprocess
+import hashlib
+import hmac
+import base64
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -27,6 +30,7 @@ KST = pytz.timezone("Asia/Seoul")
 BASE_DIR = Path(os.getenv("BOT_STATE_DIR", Path(__file__).resolve().parent)).resolve()
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_FILE = BASE_DIR / "token_cache.json"
+SECURE_TOKEN_FILE = BASE_DIR / "token_cache.secure"
 DAY_STATE_FILE = BASE_DIR / "day_state.json"
 BAA_STATE_FILE = BASE_DIR / "baa_state.json"
 TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
@@ -136,7 +140,7 @@ def durable_checkpoint(filepath):
     if os.getenv("GITHUB_STATE_MODE") != "git":
         return
     filepath = Path(filepath).resolve()
-    if filepath.name not in {"trade_history.json", "day_state.json", "baa_state.json", "risk_state.json", "holiday_cache.json"}:
+    if filepath.name not in {"trade_history.json", "day_state.json", "baa_state.json", "risk_state.json", "holiday_cache.json", "token_cache.secure"}:
         return
     if filepath.parent != BASE_DIR:
         raise TradeSafetyError("상태 파일이 지정된 영구 저장소 밖에 있습니다")
@@ -237,12 +241,79 @@ def api_request(method, path, token=None, *, tr_id=None, params=None, body=None,
     raise TradeSafetyError("알 수 없는 API 호출 실패")
 
 
+def _token_keys(salt):
+    # The existing KIS credentials are the encryption root; no new Secret needed.
+    # If these credentials change, the old cache is unreadable and a new token is issued.
+    material = (KIS_APP_KEY + "\0" + KIS_APP_SECRET).encode("utf-8")
+    derived = hashlib.pbkdf2_hmac("sha256", material, salt, 200_000, dklen=64)
+    return derived[:32], derived[32:]
+
+
+def _openssl_cbc(payload, key, iv, decrypt=False):
+    command = ["openssl", "enc", "-aes-256-cbc", "-K", key.hex(), "-iv", iv.hex(), "-nosalt"]
+    if decrypt:
+        command.append("-d")
+    try:
+        result = subprocess.run(command, input=payload, capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise TradeSafetyError(f"토큰 암호화 도구 실행 실패: {type(exc).__name__}") from exc
+    if result.returncode:
+        raise TradeSafetyError("토큰 암호화/복호화 실패")
+    return result.stdout
+
+
+def _read_secure_token():
+    if not SECURE_TOKEN_FILE.exists():
+        return {}
+    try:
+        blob = SECURE_TOKEN_FILE.read_bytes()
+        if len(blob) < 4 + 16 + 16 + 32 or blob[:4] != b"KTC1":
+            raise TradeSafetyError("암호화 토큰 형식 오류")
+        salt, iv, ciphertext, tag = blob[4:20], blob[20:36], blob[36:-32], blob[-32:]
+        enc_key, mac_key = _token_keys(salt)
+        if not hmac.compare_digest(tag, hmac.new(mac_key, blob[:-32], hashlib.sha256).digest()):
+            raise TradeSafetyError("암호화 토큰 인증 실패: 키 변경 또는 데이터 손상")
+        result = json.loads(_openssl_cbc(ciphertext, enc_key, iv, decrypt=True).decode("utf-8"))
+        if not isinstance(result, dict):
+            raise TradeSafetyError("암호화 토큰 내용 형식 오류")
+        return result
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise TradeSafetyError(f"암호화 토큰 읽기 실패: {type(exc).__name__}") from exc
+
+
+def _save_secure_token(token, expires_at):
+    salt, iv = os.urandom(16), os.urandom(16)
+    enc_key, mac_key = _token_keys(salt)
+    payload = json.dumps({"token": token, "expires_at": expires_at}).encode("utf-8")
+    encrypted = _openssl_cbc(payload, enc_key, iv)
+    blob = b"KTC1" + salt + iv + encrypted
+    blob += hmac.new(mac_key, blob, hashlib.sha256).digest()
+    tmp_name = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(prefix=".tmp_token_", dir=BASE_DIR)
+        with os.fdopen(fd, "wb") as f:
+            f.write(blob)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, SECURE_TOKEN_FILE)
+        tmp_name = None
+    except OSError as exc:
+        raise TradeSafetyError(f"암호화 토큰 저장 실패: {type(exc).__name__}") from exc
+    finally:
+        if tmp_name and os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+    # The encrypted cache must be pushed before the token is used.
+    durable_checkpoint(SECURE_TOKEN_FILE)
+
+
 def get_access_token(force=False):
     global ACCESS_TOKEN
     now_ts = int(time.time())
-    cached = load_json(CACHE_FILE, {})
+    cached = _read_secure_token()
     if not force and cached.get("expires_at", 0) > now_ts + 600 and cached.get("token"):
         ACCESS_TOKEN = cached["token"]
+        print(">> [KIS 토큰] 암호화 캐시 재사용 (신규 발급 없음)")
         return ACCESS_TOKEN
     result, _ = api_request("POST", "/oauth2/tokenP", body={
         "grant_type": "client_credentials", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET,
@@ -250,8 +321,9 @@ def get_access_token(force=False):
     token = result.get("access_token")
     if not token:
         fail(f"토큰 발급 실패: {result.get('error_description', result.get('msg1'))}")
-    save_json(CACHE_FILE, {"token": token, "expires_at": now_ts + number(result.get("expires_in"), 86400)})
+    _save_secure_token(token, now_ts + number(result.get("expires_in"), 86400))
     ACCESS_TOKEN = token
+    print(">> [KIS 토큰] 신규 발급 후 암호화 상태 저장 완료")
     return token
 
 
