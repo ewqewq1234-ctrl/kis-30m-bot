@@ -140,6 +140,83 @@ class BotSafetyTests(unittest.TestCase):
                 bot.execute_order('fake', '423160', 1, '02', action_name='테스트', strategy='BAA')
         request.assert_not_called()
 
+    def test_approved_legacy_holding_is_adopted_without_order(self):
+        holdings = {'423160': {'qty': 6, 'avg_price': 110785}}
+        with patch.object(bot, 'DRY_RUN', True), \
+             patch.object(bot, 'assert_no_pending') as pending, \
+             patch.object(bot, 'api_request') as api:
+            self.assertTrue(bot.adopt_verified_legacy_baa('fake', holdings))
+        pending.assert_called_once()
+        api.assert_not_called()
+        rows = bot.read_journal()['orders']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['source'], 'LEGACY_POSITION_ADOPTION_NO_ORDER')
+        self.assertEqual(rows[0]['confirmed_fill_qty'], 6)
+        state = bot.load_json(bot.BAA_STATE_FILE, {})
+        self.assertEqual(state['target_code'], '423160')
+        self.assertEqual(state['owned_qty'], 6)
+
+    def test_legacy_adoption_is_idempotent_across_restarts(self):
+        holdings = {'423160': {'qty': 6, 'avg_price': 110785}}
+        with patch.object(bot, 'DRY_RUN', True), \
+             patch.object(bot, 'assert_no_pending'):
+            self.assertTrue(bot.adopt_verified_legacy_baa('fake', holdings))
+            self.assertFalse(bot.adopt_verified_legacy_baa('fake', holdings))
+            bot.rebuild_strategy_state()
+        self.assertEqual(len(bot.read_journal()['orders']), 1)
+        self.assertEqual(bot.load_json(bot.BAA_STATE_FILE, {})['owned_qty'], 6)
+
+    def test_migration_never_on_live_run(self):
+        with patch.object(bot, 'DRY_RUN', False), \
+             patch.object(bot, 'assert_no_pending') as pending:
+            result = bot.adopt_verified_legacy_baa(
+                'fake', {'423160': {'qty': 6, 'avg_price': 110785}})
+        self.assertFalse(result)
+        pending.assert_not_called()
+        self.assertFalse(bot.TRADE_HISTORY_FILE.exists())
+
+    def test_migration_rejects_wrong_quantity(self):
+        with patch.object(bot, 'DRY_RUN', True), \
+             patch.object(bot, 'assert_no_pending') as pending:
+            with self.assertRaisesRegex(bot.TradeSafetyError, '수량'):
+                bot.adopt_verified_legacy_baa(
+                    'fake', {'423160': {'qty': 5, 'avg_price': 110785}})
+        pending.assert_not_called()
+        self.assertFalse(bot.TRADE_HISTORY_FILE.exists())
+
+    def test_migration_rejects_unrelated_holding(self):
+        with patch.object(bot, 'DRY_RUN', True), \
+             patch.object(bot, 'assert_no_pending') as pending:
+            self.assertFalse(bot.adopt_verified_legacy_baa('fake', {
+                '423160': {'qty': 6, 'avg_price': 110785},
+                '069500': {'qty': 1, 'avg_price': 95000},
+            }))
+        pending.assert_not_called()
+        self.assertFalse(bot.TRADE_HISTORY_FILE.exists())
+
+    def test_migration_rejects_preexisting_baa_journal(self):
+        self.write('trade_history.json', {'orders': [{
+            'id': 'historic-baa', 'strategy': 'BAA', 'code': '423160',
+            'side': 'BUY', 'requested_qty': 1, 'confirmed_fill_qty': 1,
+            'status': 'FILLED',
+        }]})
+        with patch.object(bot, 'DRY_RUN', True), \
+             patch.object(bot, 'assert_no_pending') as pending:
+            with self.assertRaisesRegex(bot.TradeSafetyError, '기존 BAA 주문 기록'):
+                bot.adopt_verified_legacy_baa(
+                    'fake', {'423160': {'qty': 6, 'avg_price': 110785}})
+        pending.assert_not_called()
+        self.assertEqual(len(bot.read_journal()['orders']), 1)
+
+    def test_migration_rejects_changed_avg_price(self):
+        with patch.object(bot, 'DRY_RUN', True), \
+             patch.object(bot, 'assert_no_pending') as pending:
+            with self.assertRaisesRegex(bot.TradeSafetyError, '매입단가'):
+                bot.adopt_verified_legacy_baa(
+                    'fake', {'423160': {'qty': 6, 'avg_price': 110000}})
+        pending.assert_not_called()
+        self.assertFalse(bot.TRADE_HISTORY_FILE.exists())
+
 
 if __name__ == '__main__':
     unittest.main()
