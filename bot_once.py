@@ -481,6 +481,81 @@ def open_or_uncertain_orders():
     return [x for x in journal_orders() if x.get("status") in statuses]
 
 
+# One-time, explicitly approved legacy position bootstrap. This is a record-only
+# migration: it MUST NOT send an order. It is permitted ONLY while DRY_RUN=Y.
+# Account snapshot provided by the owner on 2026-10-14: 423160, six shares,
+# cost amount KRW 664,707 and displayed average KRW 110,785.
+LEGACY_BAA_CODE = "423160"
+LEGACY_BAA_QTY = 6
+LEGACY_BAA_COST = 664707
+LEGACY_BAA_AVG = 110785.0
+LEGACY_BAA_ID = "LEGACY-BAA-423160-6-20261014"
+
+
+def adopt_verified_legacy_baa(token: str, holdings: dict):
+    """Permanently journal one verified position; no brokerage order request.
+
+    Initial migration is only allowed in dry-run, with an exact one-position
+    account match and no conflicting BAA history. All later runs are no-ops.
+    Failure to persist the journal leaves trading stopped (fail closed).
+    """
+    journal = read_journal()
+    entries = journal.get("orders", [])
+    if not isinstance(entries, list):
+        fail("주문 원장 형식 오류: orders는 리스트여야 합니다")
+    legacy = [o for o in entries if isinstance(o, dict) and o.get("id") == LEGACY_BAA_ID]
+    if legacy:
+        if len(legacy) != 1 or legacy[0].get("status") != "FILLED" or \
+                number(legacy[0].get("confirmed_fill_qty")) != LEGACY_BAA_QTY or \
+                legacy[0].get("code") != LEGACY_BAA_CODE or legacy[0].get("strategy") != "BAA":
+            fail("기존 보유분 인수 원장이 변조되었거나 중복되었습니다")
+        return False
+    # Do not create a new owner record in live mode under any circumstances.
+    if not DRY_RUN:
+        return False
+    # Restrict the one-time bootstrap to accounts whose only holding is exactly
+    # the owner-approved position. Never infer ownership of unrelated assets.
+    if set(holdings) != {LEGACY_BAA_CODE}:
+        return False
+    owned = holdings.get(LEGACY_BAA_CODE, {})
+    if number(owned.get("qty")) != LEGACY_BAA_QTY:
+        fail("기존 보유분 인수 중단: 423160 수량이 승인된 6주와 다릅니다")
+    try:
+        avg = float(owned.get("avg_price"))
+    except (TypeError, ValueError):
+        fail("기존 보유분 인수 중단: 매입단가 조회 오류")
+    if not (LEGACY_BAA_AVG - 5 <= avg <= LEGACY_BAA_AVG + 5):
+        fail("기존 보유분 인수 중단: 기존 매입단가가 승인된 내역과 다릅니다")
+    if any(not isinstance(o, dict) for o in entries):
+        fail("주문 원장 구조 오류: 이전 기록 검토 필요")
+    if any(o.get("strategy") == "BAA" for o in entries):
+        fail("기존 BAA 주문 기록이 있어 자동 인수를 중단합니다")
+    if open_or_uncertain_orders():
+        fail("미확정 주문이 있어 기존 보유분 인수를 중단합니다")
+    state = load_json(BAA_STATE_FILE, {})
+    if state.get("target_code") not in (None, "") or number(state.get("owned_qty")):
+        fail("기존 BAA 상태가 있어 자동 인수를 중단합니다")
+    # main() already calls assert_no_pending(); repeat the broker-side check as
+    # a defense-in-depth guard for the migration itself.
+    assert_no_pending(token)
+    # Append a synthetic FILLED record so rebuild_strategy_state() obtains the
+    # correct owned_qty. Its source field distinguishes it from a broker trade.
+    entries.append({
+        "id": LEGACY_BAA_ID,
+        "strategy": "BAA", "code": LEGACY_BAA_CODE, "side": "BUY",
+        "requested_qty": LEGACY_BAA_QTY,
+        "confirmed_fill_qty": LEGACY_BAA_QTY,
+        "confirmed_fill_amt": LEGACY_BAA_COST,
+        "status": "FILLED", "source": "LEGACY_POSITION_ADOPTION_NO_ORDER",
+        "created_at": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
+        "odno": None, "sell_cost_basis": LEGACY_BAA_AVG,
+    })
+    save_json(TRADE_HISTORY_FILE, journal)  # Commit BEFORE derived state.
+    rebuild_strategy_state()
+    print(">> ✅ [BAA 기존 보유 인수] 423160 6주 원장 등록 완료 (주문 전송 없음)")
+    return True
+
+
 def rebuild_strategy_state():
     """Rebuild position ownership from the journal (source of truth).
 
@@ -967,6 +1042,7 @@ def main():
             save_json(RISK_STATE_FILE, {"date": today, "opening_nav": tot_eval})
         total_asset = tot_eval
         print(f">> 계좌 예수금: {deposit:,}원 | 총 평가자산: {total_asset:,}원 | 보유종목수: {len(holdings)}개")
+        adopt_verified_legacy_baa(token, holdings)
         run_intraday(token, holdings, deposit, total_asset)
         # Avoid stale account snapshot after a daytrade order.
         assert_no_pending(token)
