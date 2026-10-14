@@ -633,13 +633,22 @@ def reconcile_orders(token: str):
         qty = number(row.get("ord_qty"))
         filled = number(row.get("tot_ccld_qty"))
         amount = number(row.get("tot_ccld_amt"))
-        if qty <= 0 or filled > qty or qty != number(entry["requested_qty"]):
+        canceled = number(row.get("cncl_cfrm_qty"))
+        # Broker-confirmed cancellation closes the remaining quantity; any
+        # already-filled shares still belong in the position journal.
+        if (qty <= 0 or filled < 0 or canceled < 0 or filled + canceled > qty
+                or qty != number(entry["requested_qty"])):
             fail(f"주문조회 수량 불일치: {odno}")
         if filled > 0 and amount <= 0:
             fail(f"체결금액 누락: {odno}")
         if filled < number(entry.get("confirmed_fill_qty")):
             fail(f"체결 수량 역행: {odno}")
-        status = "FILLED" if filled == qty else "PARTIAL" if filled > 0 else "ACCEPTED"
+        if filled == qty:
+            status = "FILLED"
+        elif canceled > 0 and filled + canceled == qty:
+            status = "CANCELED"
+        else:
+            status = "PARTIAL" if filled > 0 else "ACCEPTED"
         # The journal is committed BEFORE derived state. Recovery is idempotent.
         update_journal(entry["id"], status=status, confirmed_fill_qty=filled,
                        confirmed_fill_amt=amount)
