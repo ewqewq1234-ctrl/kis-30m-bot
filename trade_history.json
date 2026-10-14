@@ -1,0 +1,18 @@
+{
+  "orders": [
+    {
+      "id": "LEGACY-BAA-423160-6-20261014",
+      "strategy": "BAA",
+      "code": "423160",
+      "side": "BUY",
+      "requested_qty": 6,
+      "confirmed_fill_qty": 6,
+      "confirmed_fill_amt": 664707,
+      "status": "FILLED",
+      "source": "LEGACY_POSITION_ADOPTION_NO_ORDER",
+      "created_at": "2026-10-14 11:33:27",
+      "odno": null,
+      "sell_cost_basis": 110785.0
+    }
+  ]
+}
