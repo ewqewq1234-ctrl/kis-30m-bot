@@ -65,7 +65,7 @@ jobs:
 
       - run: pip install -r requirements.txt
       - run: python -m py_compile bot_once.py
-      - run: python -m unittest -v test_bot_once.py
+      - run: python -m unittest -v test_bot_once.py test_api_resilience.py
         env:
           GITHUB_STATE_MODE: 'off'
 
