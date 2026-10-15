@@ -1,0 +1,62 @@
+name: Apply KIS balance HTTP500 fix (manual one-time)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Same concurrency group as production bot: never update code during a trading run.
+concurrency:
+  group: kis-bot-single-account
+  cancel-in-progress: false
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      # Only static and unit tests. Never execute bot_once.py directly.
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_CANO: ${{ secrets.KIS_CANO }}
+      KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+      KIS_ENV: real
+      DRY_RUN: 'Y'
+      ENABLE_LIVE_ORDERS: 'NO'
+      FORCE_BAA: 'N'
+      GITHUB_STATE_MODE: 'off'
+      BOT_STATE_DIR: ${{ runner.temp }}/kis-bot-test-state
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install requirements
+        run: pip install -r requirements.txt
+
+      - name: Apply safe patch
+        run: python apply_kis_balance_fix.py .
+
+      - name: Check syntax and run all 82 tests
+        run: |
+          python -m py_compile bot_once.py test_bot_once.py test_api_resilience.py
+          python -m unittest -v test_bot_once.py test_api_resilience.py
+
+      - name: Commit patch only after tests pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bot_once.py test_api_resilience.py .github/workflows/trade.yml
+          git diff --cached --check
+          git commit -m 'fix: KIS balance GET retries and redundant balance reads [skip ci]'
+          git push origin HEAD:main
