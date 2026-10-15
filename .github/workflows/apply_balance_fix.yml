@@ -56,7 +56,8 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add bot_once.py test_api_resilience.py .github/workflows/trade.yml
+          git restore -- .github/workflows/trade.yml
+          git add bot_once.py test_api_resilience.py
           git diff --cached --check
           git commit -m 'fix: KIS balance GET retries and redundant balance reads [skip ci]'
           git push origin HEAD:main
