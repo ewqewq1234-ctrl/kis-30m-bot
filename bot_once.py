@@ -82,6 +82,8 @@ DEFENSE_UNIVERSE = {
 BAA_UNIVERSE = set(ATTACK_UNIVERSE) | set(DEFENSE_UNIVERSE)
 SESSION = requests.Session()
 ACCESS_TOKEN = None
+# In-process counter: increments only after durable journal checkpoint, before order POST.
+ACCOUNT_ORDER_ATTEMPTS = 0
 
 
 class TradeSafetyError(RuntimeError):
@@ -208,8 +210,9 @@ def validate_environment():
         fail("MAX_DAILY_LOSS_RATIO는 0과 1 사이여야 합니다")
 
 
-def api_request(method, path, token=None, *, tr_id=None, params=None, body=None, timeout=10, retries=1):
-    """GET safe retry only; POST never blindly retried (uncertain order acceptance)."""
+def api_request(method, path, token=None, *, tr_id=None, params=None, body=None,
+                timeout=10, retries=1, tr_cont=None):
+    """Fail-closed KIS request. Retry only transient GET errors; never POST."""
     global ACCESS_TOKEN
     headers = {"content-type": "application/json; charset=utf-8", "appkey": KIS_APP_KEY,
                "appsecret": KIS_APP_SECRET}
@@ -217,29 +220,55 @@ def api_request(method, path, token=None, *, tr_id=None, params=None, body=None,
         headers["authorization"] = f"Bearer {ACCESS_TOKEN or token}"
     if tr_id:
         headers["tr_id"] = tr_id
+    # Official KIS balance example: first page '', subsequent pages 'N'.
+    if tr_cont is not None:
+        headers["tr_cont"] = tr_cont
     attempts = (retries + 1) if method == "GET" else 1
     for attempt in range(attempts):
+        response = None
         try:
             response = SESSION.request(method, KIS_URL + path, headers=headers, params=params,
                                        json=body, timeout=timeout)
             if response.status_code == 401 and method == "GET" and token and attempt + 1 < attempts:
+                # Only reauthorize GET; POST order outcome may be uncertain.
                 fresh = get_access_token(force=True)
                 headers["authorization"] = f"Bearer {fresh}"
-                time.sleep(0.3)
+                time.sleep(0.5)
                 continue
             response.raise_for_status()
             result = response.json()
             if not isinstance(result, dict):
                 raise TradeSafetyError("API 응답 형식 오류")
             if "rt_cd" in result and result["rt_cd"] != "0":
-                raise TradeSafetyError(f"KIS API 거부 [{path}]: {result.get('msg_cd')} {result.get('msg1')}")
+                raise TradeSafetyError(
+                    f"KIS API 거부 [{path}]: {result.get('msg_cd')} {result.get('msg1')}")
             return result, response.headers
-        except (requests.RequestException, ValueError, TradeSafetyError) as ex:
-            if attempt + 1 >= attempts:
-                raise TradeSafetyError(f"API 호출 실패 [{path}]: {type(ex).__name__}: {ex}") from ex
-            time.sleep(0.7 * (attempt + 1))
+        except TradeSafetyError:
+            # Business errors are not transient; do not resend.
+            raise
+        except (requests.RequestException, ValueError) as ex:
+            status = (response.status_code if response is not None else None)
+            retryable = method == "GET" and (
+                status in (429, 500, 502, 503, 504)
+                or (status is None and isinstance(ex,
+                    (requests.Timeout, requests.ConnectionError)))
+            )
+            if not retryable or attempt + 1 >= attempts:
+                # Avoid printing account number from requests' full URL.
+                detail = f"HTTP {status}" if status is not None else type(ex).__name__
+                raise TradeSafetyError(f"API 호출 실패 [{path}]: {detail}; "
+                                       f"요청 시도 {attempt + 1}회") from ex
+            wait = min(4.0, 1.0 * (2 ** attempt))
+            if status == 429 and response is not None:
+                try:
+                    wait = min(10.0, max(wait, float(response.headers.get("Retry-After", 0))))
+                except (ValueError, TypeError):
+                    pass
+            print(f">> [KIS API 일시 오류] {path}, "
+                  f"{('HTTP ' + str(status)) if status is not None else type(ex).__name__}; "
+                  f"{wait:.1f}초 후 GET 재시도 ({attempt + 1}/{attempts - 1})")
+            time.sleep(wait)
     raise TradeSafetyError("알 수 없는 API 호출 실패")
-
 
 def _token_keys(salt):
     # The existing KIS credentials are the encryption root; no new Secret needed.
@@ -387,7 +416,8 @@ def get_account_balance(token: str):
     holdings, summary = {}, None
     for i in range(10):
         result, heads = api_request("GET", "/uapi/domestic-stock/v1/trading/inquire-balance", token,
-                                    tr_id="TTTC8434R" if KIS_ENV == "real" else "VTTC8434R", params=params)
+                                    tr_id="TTTC8434R" if KIS_ENV == "real" else "VTTC8434R",
+                                    params=params, retries=2, tr_cont="" if i == 0 else "N")
         for item in result.get("output1") or []:
             qty = number(item.get("hldg_qty"))
             if qty > 0:
@@ -711,6 +741,9 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
             "ORD_DVSN": ord_dvsn, "ORD_QTY": str(qty), "ORD_UNPR": "0",
             "EXCG_ID_DVSN_CD": "KRX"}
     tr_id = ("TTTC0012U" if side == "BUY" else "TTTC0011U") if KIS_ENV == "real" else ("VTTC0012U" if side == "BUY" else "VTTC0011U")
+    # As soon as a real order POST is attempted, later balance snapshots must refresh.
+    global ACCOUNT_ORDER_ATTEMPTS
+    ACCOUNT_ORDER_ATTEMPTS += 1
     try:
         result, _ = api_request("POST", "/uapi/domestic-stock/v1/trading/order-cash", token,
                                 tr_id=tr_id, body=body, timeout=10, retries=0)
@@ -1052,13 +1085,21 @@ def main():
         total_asset = tot_eval
         print(f">> 계좌 예수금: {deposit:,}원 | 총 평가자산: {total_asset:,}원 | 보유종목수: {len(holdings)}개")
         adopt_verified_legacy_baa(token, holdings)
+        before_intraday_orders = ACCOUNT_ORDER_ATTEMPTS
         run_intraday(token, holdings, deposit, total_asset)
-        # Avoid stale account snapshot after a daytrade order.
+        # Always reconcile before BAA; no automatic reorders on uncertain fills.
         assert_no_pending(token)
-        holdings, deposit, tot_eval = get_account_balance(token)
+        # Refresh before BAA when the bot placed an order, or when BAA may trade.
+        # In other windows, reuse the initial snapshot to avoid needless API calls.
+        baa_time = now_kst().strftime("%H:%M")
+        if (ACCOUNT_ORDER_ATTEMPTS != before_intraday_orders or FORCE_BAA
+                or "11:00" <= baa_time <= "11:25"):
+            holdings, deposit, tot_eval = get_account_balance(token)
+        before_baa_orders = ACCOUNT_ORDER_ATTEMPTS
         run_baa(token, holdings, deposit, tot_eval, force_run=FORCE_BAA)
         assert_no_pending(token)
-        holdings, deposit, tot_eval = get_account_balance(token)
+        if ACCOUNT_ORDER_ATTEMPTS != before_baa_orders:
+            holdings, deposit, tot_eval = get_account_balance(token)
         handle_daily_closing_report(token, holdings, tot_eval)
         print("\n>> 🏁 1회 실행 사이클이 완료되었습니다.")
 
