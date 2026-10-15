@@ -26,7 +26,7 @@ jobs:
       ENABLE_LIVE_ORDERS: 'NO'
       FORCE_BAA: 'N'
       GITHUB_STATE_MODE: 'off'
-      BOT_STATE_DIR: ${{ runner.temp }}/kis-bot-test-state
+      BOT_STATE_DIR: ${{ github.workspace }}/.kis-bot-test-state
 
     steps:
       - name: Checkout source
