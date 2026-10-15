@@ -51,6 +51,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DRY_RUN = os.getenv("DRY_RUN", "Y").upper() != "N"
 ENABLE_LIVE_ORDERS = os.getenv("ENABLE_LIVE_ORDERS", "NO") == "YES"
 FORCE_BAA = os.getenv("FORCE_BAA", "N").upper() == "Y"
+RUN_MIDDAY_REPORT = os.getenv("RUN_MIDDAY_REPORT", "N").upper() == "Y"
 # FORCE_BAA is diagnostic only. It never bypasses market or live-order guards.
 ORDER_POLL_SECONDS = 3
 MAX_DAILY_LOSS_RATIO = float(os.getenv("MAX_DAILY_LOSS_RATIO", "0.02"))
@@ -948,14 +949,15 @@ def select_baa_target(token):
 
 def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
     now = now_kst()
-    if now.strftime("%H:%M") < "16:05" and not FORCE_BAA:
+    # GitHub marks only its final 14:53 KST scheduled event; runner delays are safe.
+    if not (RUN_MIDDAY_REPORT or FORCE_BAA):
         return
     state = load_json(BAA_STATE_FILE, {})
     if state.get("last_report_date") == now.strftime("%Y-%m-%d") and not FORCE_BAA:
         return
-    print(">> [일일 결산] 장 마감 카나리아 및 BAA 전략 진단 리포트를 생성합니다.")
+    print(">> [중간 결산] 최종 예약 장중 카나리아·BAA 잠정 리포트를 생성합니다.")
     code, name, is_defense, logs, _ = select_baa_target(token)
-    msg = (f"📋 <b>[장 마감 전략 결산 리포트]</b>\n📅 날짜: {now:%Y-%m-%d}\n"
+    msg = (f"📋 <b>[장중 중간 결산(잠정) - 최종 예약 14:53]</b>\n📅 날짜: {now:%Y-%m-%d} / 실제 조회: {now:%H:%M} KST\n"
            f"━━━━━━━━━━━━━━━━━━━━\n• 운용 모드: {'🛡️ 수비 모드' if is_defense else '🚀 공격 모드'}\n"
            f"• 선정 타깃: <b>{html.escape(name)} ({code})</b>\n"
            f"• 카나리아 점검: {html.escape(', '.join(logs))}\n"
@@ -964,7 +966,7 @@ def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
     if not FORCE_BAA:
         state["last_report_date"] = now.strftime("%Y-%m-%d")
         save_json(BAA_STATE_FILE, state)
-    print(">> ✅ 장 마감 리포트 전송 시도 완료.")
+    print(">> ✅ 장중 중간 결산 리포트 전송 시도 완료.")
 
 
 def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_run: bool = False):

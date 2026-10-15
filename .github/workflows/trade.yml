@@ -8,7 +8,8 @@ on:
     - cron: '7,21,28,33,46,52 2 * * 1-5'
     - cron: '2,9,18,32,37,46,54 3 * * 1-5'
     - cron: '4,18,27,32,42,53 4 * * 1-5'
-    - cron: '3,8,21,26,33,48,53 5 * * 1-5'
+    - cron: '3,8,21,26,33,48 5 * * 1-5'
+    - cron: '53 5 * * 1-5'
 
 permissions:
   contents: write
@@ -73,4 +74,6 @@ jobs:
           GITHUB_STATE_MODE: 'off'
 
       - name: Run bot (fail closed)
+        env:
+          RUN_MIDDAY_REPORT: ${{ github.event_name == 'schedule' && github.event.schedule == '53 5 * * 1-5' && 'Y' || 'N' }}
         run: python bot_once.py

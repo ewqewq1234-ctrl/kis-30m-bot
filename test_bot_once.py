@@ -744,8 +744,16 @@ class StrategyAndIntegrationTests(unittest.TestCase):
                 bot.run_baa('fake',{},300159,964929)
         order.assert_not_called()
 
+    def test_midday_report_requires_final_schedule_flag(self):
+        with self.fixed_time(14, 53), patch.object(bot, 'RUN_MIDDAY_REPORT', False), \
+             patch.object(bot, 'FORCE_BAA', False), \
+             patch.object(bot, 'select_baa_target') as choose:
+            bot.handle_daily_closing_report('fake', {}, 964929)
+        choose.assert_not_called()
+        self.assertFalse(bot.load_json(bot.BAA_STATE_FILE, {}).get('last_report_date'))
+
     def test_closing_report_only_once_per_day(self):
-        with self.fixed_time(16,10),patch.object(bot,'select_baa_target',return_value=('423160','KOFR',True,['test'],[100.]*252)) as choose:
+        with self.fixed_time(14,53),patch.object(bot,'RUN_MIDDAY_REPORT',True),patch.object(bot,'select_baa_target',return_value=('423160','KOFR',True,['test'],[100.]*252)) as choose:
             bot.handle_daily_closing_report('fake',{},964929)
             bot.handle_daily_closing_report('fake',{},964929)
         choose.assert_called_once()
