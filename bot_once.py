@@ -102,6 +102,20 @@ def number(value, default=0):
         return default
 
 
+def share_quantity(value):
+    """Broker/state quantities must be explicit nonnegative integers."""
+    text = str(value).strip()
+    if not text or not text.isascii() or not text.isdigit():
+        fail("보유 수량 형식 오류: 매매 차단")
+    try:
+        quantity = int(text)
+    except ValueError:
+        fail("보유 수량 범위 오류: 매매 차단")
+    if quantity > 2**63 - 1:
+        fail("보유 수량 범위 오류: 매매 차단")
+    return quantity
+
+
 # ==============================================================================
 # 2. 유틸리티 및 원자적 상태 저장
 # ==============================================================================
@@ -414,15 +428,24 @@ def get_account_balance(token: str):
     params = {"CANO": KIS_CANO, "ACNT_PRDT_CD": KIS_ACNT_PRDT_CD, "AFHR_FLPR_YN": "N",
               "OFL_YN": "", "INQR_DVSN": "02", "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N",
               "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""}
-    holdings, summary = {}, None
+    holdings, summary, seen_codes = {}, None, set()
     for i in range(10):
         result, heads = api_request("GET", "/uapi/domestic-stock/v1/trading/inquire-balance", token,
                                     tr_id="TTTC8434R" if KIS_ENV == "real" else "VTTC8434R",
                                     params=params, retries=2, tr_cont="" if i == 0 else "N")
-        for item in result.get("output1") or []:
-            qty = number(item.get("hldg_qty"))
+        rows = result.get("output1")
+        if not isinstance(rows, list):
+            fail("잔고 종목 목록 누락/형식 오류")
+        for item in rows:
+            if not isinstance(item, dict):
+                fail("잔고 종목 행 형식 오류")
+            code = item.get("pdno")
+            if (not isinstance(code, str) or len(code) != 6
+                    or not code.isascii() or not code.isdigit() or code in seen_codes):
+                fail("잔고 종목 코드 누락/중복/형식 오류")
+            seen_codes.add(code)
+            qty = share_quantity(item.get("hldg_qty"))
             if qty > 0:
-                code = item.get("pdno")
                 holdings[code] = {"name": item.get("prdt_name", code), "qty": qty,
                                   "avg_price": float(item.get("pchs_avg_pric") or 0)}
         values = result.get("output2") or []
@@ -720,6 +743,20 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
         allowed = get_buyable_qty(token, code, current)
         if qty > allowed:
             fail(f"매수가능 {allowed}주 < 요청 {qty}주: 수량 자동변경 없이 주문 차단")
+        if code == CODE_BULL:
+            # Refresh AFTER price/buying-power reads, immediately before intent.
+            if strategy != "DAY":
+                fail("069500 매수는 DAY 전략만 허용")
+            holdings, _, _ = get_account_balance(token)
+            actual_qty = share_quantity(holdings.get(code, {}).get("qty", 0))
+            day = load_json(DAY_STATE_FILE, {})
+            baa = load_json(BAA_STATE_FILE, {})
+            if (actual_qty != share_quantity(day.get("owned_qty", 0))
+                    or (baa.get("target_code") == code
+                        and share_quantity(baa.get("owned_qty", 0)) > 0)):
+                fail("069500 주문 직전 잔고/전략 원장 불일치")
+            if actual_qty + qty > 1:
+                fail("069500 계좌 총보유량 1주 상한 초과: 매수 차단")
     else:
         holdings, _, _ = get_account_balance(token)
         if holdings.get(code, {}).get("qty", 0) < qty:
@@ -894,7 +931,7 @@ def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
         if "09:15" <= time_hm <= "14:30":
             if check_daytrade_signal(token):
                 base_budget = min(float(deposit), float(intraday_budget * WEIGHT_BASE)) * 0.96
-                base_qty = int(base_budget // curr_price)
+                base_qty = min(1, int(base_budget // curr_price))
                 if base_qty > 0:
                     execute_order(token, CODE_BULL, base_qty, "02", action_name="단타 1차 매수", strategy="DAY")
                 else:
@@ -949,15 +986,15 @@ def select_baa_target(token):
 
 def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
     now = now_kst()
-    # GitHub marks only its final 14:53 KST scheduled event; runner delays are safe.
+    # GitHub marks the dedicated 14:53 KST report event; runner delays are safe.
     if not (RUN_MIDDAY_REPORT or FORCE_BAA):
         return
     state = load_json(BAA_STATE_FILE, {})
     if state.get("last_report_date") == now.strftime("%Y-%m-%d") and not FORCE_BAA:
         return
-    print(">> [중간 결산] 최종 예약 장중 카나리아·BAA 잠정 리포트를 생성합니다.")
+    print(">> [중간 결산] 14:53 결산 예약의 장중 카나리아·BAA 잠정 리포트를 생성합니다.")
     code, name, is_defense, logs, _ = select_baa_target(token)
-    msg = (f"📋 <b>[장중 중간 결산(잠정) - 최종 예약 14:53]</b>\n📅 날짜: {now:%Y-%m-%d} / 실제 조회: {now:%H:%M} KST\n"
+    msg = (f"📋 <b>[장중 중간 결산(잠정) - 14:53 결산 예약]</b>\n📅 날짜: {now:%Y-%m-%d} / 실제 조회: {now:%H:%M} KST\n"
            f"━━━━━━━━━━━━━━━━━━━━\n• 운용 모드: {'🛡️ 수비 모드' if is_defense else '🚀 공격 모드'}\n"
            f"• 선정 타깃: <b>{html.escape(name)} ({code})</b>\n"
            f"• 카나리아 점검: {html.escape(', '.join(logs))}\n"
