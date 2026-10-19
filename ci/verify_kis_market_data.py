@@ -31,7 +31,7 @@ EXPECTED_PRODUCT_NAMES = {
     **{code: bot.CANARY_UNIVERSE[code] for code in ("251350", "195980", "437080")},
     **EXPECTED_DEFENSE_NAMES,
 }
-PRODUCT_INFO_PATH = "/uapi/domestic-stock/v1/quotations/search-stock-info"
+PRODUCT_INFO_PATH = "/uapi/domestic-stock/v1/quotations/search-info"
 
 
 def normalized_name(value):
@@ -98,7 +98,7 @@ def verify_product_identity(token, code):
         PRODUCT_INFO_PATH,
         token,
         tr_id="CTPF1604R",
-        params={"PRDT_TYPE_CD": "512", "PDNO": code},
+        params={"PRDT_TYPE_CD": "300", "PDNO": code},
     )
     output = result.get("output")
     if not isinstance(output, dict):
