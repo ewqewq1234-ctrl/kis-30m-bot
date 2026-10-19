@@ -92,4 +92,6 @@ connections blocked. These tests do not submit KIS order requests.
 The separate `.github/workflows/kis-market-data-verification.yml` workflow is
 manual and read-only: its API allowlist permits quote/history GET requests and
 OAuth token issuance only, blocks all order endpoints, uses temporary runner
-state, and never accesses the persistent bot-state branch.
+state, and reads only the encrypted KIS token cache from `bot-state` when
+available. It never reads or writes the persisted trading ledger or strategy
+state and never writes to `bot-state`.
