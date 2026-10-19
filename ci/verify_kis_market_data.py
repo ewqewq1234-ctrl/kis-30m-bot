@@ -53,7 +53,8 @@ def read_only_request(method, path, token=None, **kwargs):
         code = params.get("FID_INPUT_ISCD")
         result = response[0]
         rows = result.get("output2")
-        audit = HISTORY_AUDIT.setdefault(code, [])
+        adjustment = params.get("FID_ORG_ADJ_PRC")
+        audit = HISTORY_AUDIT.setdefault((code, adjustment), [])
         audit.append({
             "start": params.get("FID_INPUT_DATE_1"),
             "end": params.get("FID_INPUT_DATE_2"),
@@ -150,6 +151,44 @@ def report_canary_metrics(label, codes, histories):
     return positive
 
 
+def verify_history(token, code, *, adjusted=False):
+    closes = bot.get_daily_closes(token, code, 252, adjusted=adjusted)
+    adjustment = "1" if adjusted else "0"
+    pages = HISTORY_AUDIT.get((code, adjustment), [])
+    if len(closes) != 252 or not pages:
+        raise bot.TradeSafetyError(f"{code} KIS history verification incomplete")
+    records = []
+    for page in pages:
+        if not isinstance(page["rows"], list) or len(page["rows"]) > 100:
+            raise bot.TradeSafetyError(f"{code} KIS daily page malformed or over 100 rows")
+        records.extend(
+            (str(row["stck_bsop_date"]), float(row["stck_clpr"]))
+            for row in page["rows"]
+        )
+    dates = [day for day, _ in records]
+    if len(dates) != len(set(dates)):
+        raise bot.TradeSafetyError(f"{code} duplicate KIS historical dates")
+    if not records:
+        raise bot.TradeSafetyError(f"{code} KIS history returned no dates")
+    for newer, older in zip(pages, pages[1:]):
+        newer_start = datetime.strptime(newer["start"], "%Y%m%d").date()
+        older_end = datetime.strptime(older["end"], "%Y%m%d").date()
+        if older_end + bot.timedelta(days=1) != newer_start:
+            raise bot.TradeSafetyError(f"{code} KIS history pages overlap or have a gap")
+    ordered_closes = [
+        close for _, close in sorted(records, key=lambda item: item[0])[-252:]
+    ]
+    if ordered_closes != closes:
+        raise bot.TradeSafetyError(f"{code} KIS closes are not chronological")
+    basis = "adjusted" if adjusted else "unadjusted"
+    print(
+        f"HISTORY {basis} {code} | pages={len(pages)} | rows={len(records)} | "
+        f"raw_unique_dates={len(set(dates))} | returned_closes=252 | "
+        f"cutoff=20261019 | dates={min(dates)}..{max(dates)}"
+    )
+    return closes
+
+
 def main():
     if bot.KIS_ENV != "real" or not bot.KIS_APP_KEY or not bot.KIS_APP_SECRET:
         raise bot.TradeSafetyError("KIS real-market credentials are unavailable")
@@ -173,42 +212,27 @@ def main():
     bot.now_kst = lambda: AS_OF
     try:
         for code in required_codes:
-            histories[code] = bot.get_daily_closes(token, code, 252)
-            if len(histories[code]) != 252:
-                raise bot.TradeSafetyError(f"{code} did not return exactly 252 closes")
-            pages = HISTORY_AUDIT.get(code, [])
-            records = []
-            for page in pages:
-                if not isinstance(page["rows"], list) or len(page["rows"]) > 100:
-                    raise bot.TradeSafetyError(f"{code} KIS daily page malformed or over 100 rows")
-                records.extend(
-                    (str(row["stck_bsop_date"]), float(row["stck_clpr"]))
-                    for row in page["rows"]
-                )
-            dates = [day for day, _ in records]
-            if len(dates) != len(set(dates)):
-                raise bot.TradeSafetyError(f"{code} duplicate KIS historical dates")
-            if not records:
-                raise bot.TradeSafetyError(f"{code} KIS history returned no dates")
-            for newer, older in zip(pages, pages[1:]):
-                newer_start = datetime.strptime(newer["start"], "%Y%m%d").date()
-                older_end = datetime.strptime(older["end"], "%Y%m%d").date()
-                if older_end + bot.timedelta(days=1) != newer_start:
-                    raise bot.TradeSafetyError(f"{code} KIS history pages overlap or have a gap")
-            ordered_closes = [
-                close for _, close in sorted(records, key=lambda item: item[0])[-252:]
-            ]
-            if ordered_closes != histories[code]:
-                raise bot.TradeSafetyError(f"{code} KIS closes are not chronological")
-            date_range = f"{min(dates)}..{max(dates)}"
-            print(
-                f"HISTORY {code} | pages={len(pages)} | rows={len(records)} | "
-                f"raw_unique_dates={len(set(dates))} | returned_closes=252 | "
-                f"cutoff=20261019 | dates={date_range}"
-            )
+            histories[code] = verify_history(token, code)
+            time.sleep(0.2)
+        adjusted_histories = {}
+        for code in NEW_CANARY:
+            adjusted_histories[code] = verify_history(token, code, adjusted=True)
             time.sleep(0.2)
     finally:
         bot.now_kst = original_now_kst
+
+    for code in NEW_CANARY:
+        raw_returns, raw_score = momentum_metrics(histories[code])
+        adjusted_returns, adjusted_score = momentum_metrics(adjusted_histories[code])
+        deltas = " ".join(
+            f"{period}_delta={adjusted_returns[period] - raw_returns[period]:.6%}"
+            for period in ("1m", "3m", "6m", "12m")
+        )
+        print(
+            f"ADJUSTMENT {code} | unadjusted_score={raw_score:.8f} "
+            f"adjusted_score={adjusted_score:.8f} "
+            f"score_delta={adjusted_score - raw_score:.8f} | {deltas}"
+        )
 
     report_canary_metrics("OLD", OLD_CANARY, histories)
     report_canary_metrics("NEW", NEW_CANARY, histories)

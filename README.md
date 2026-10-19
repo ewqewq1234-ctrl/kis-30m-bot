@@ -20,11 +20,11 @@
   and exclusions from BND. The requested `195980` label uses the current PLUS
   brand. The configured daily-history request uses unadjusted closes
   (`FID_ORG_ADJ_PRC=0`), so corporate actions and distributions may affect
-  comparisons. KIS current-price, product-identity, and 252-session history
-  verification for the new assets is still required; no KIS credentials are
-  available in the development environment, so exact live momentum scores are
-  not claimed. Do not merge this change into production until that verification
-  passes.
+  comparisons. The isolated read-only KIS verifier checks current quotes,
+  product identity, 252-session unadjusted histories, and adjusted-versus-
+  unadjusted return/score differences for the new Canary assets. The strategy
+  continues to use unadjusted closes; the adjusted data is for verification
+  only. Do not merge this change into production until the verifier passes.
 - Defensive BAA ticker codes remain `423160`, `449170`, `453850`, and `411060`.
   `449170` is labeled TIGER KOFR금리액티브(합성), not a USD SOFR fund;
   `453850` is labeled ACE 미국30년국채액티브(H). `423160` and `449170` may

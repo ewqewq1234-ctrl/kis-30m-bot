@@ -815,7 +815,8 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
 # ==============================================================================
 # 4. 일봉 수집 및 수학적 모멘텀 스코어링
 # ==============================================================================
-def get_daily_closes(token: str, code: str, target_count: int = 252) -> list:
+def get_daily_closes(token: str, code: str, target_count: int = 252, *,
+                     adjusted: bool = False) -> list:
     # 100 records maximum per request. 120-calendar-day windows avoid truncated history.
     as_of = now_kst().date()
     end = as_of
@@ -827,7 +828,8 @@ def get_daily_closes(token: str, code: str, target_count: int = 252) -> list:
                                     "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
                                     "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
                                     "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
-                                    "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0",
+                                    "FID_PERIOD_DIV_CODE": "D",
+                                    "FID_ORG_ADJ_PRC": "1" if adjusted else "0",
                                 })
         rows = result.get("output2")
         if not isinstance(rows, list):

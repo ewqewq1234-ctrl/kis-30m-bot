@@ -260,6 +260,25 @@ class OneShareTests(unittest.TestCase):
         for prior, following in zip(requests, requests[1:]):
             self.assertEqual(following[1].date() + timedelta(days=1), prior[0].date())
 
+    def test_kis_daily_history_can_verify_adjusted_closes_on_request(self):
+        def page_response(method, path, token, **kwargs):
+            self.assertEqual(method, "GET")
+            self.assertEqual(
+                path, "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+            )
+            self.assertEqual(kwargs["params"]["FID_ORG_ADJ_PRC"], "1")
+            return {"output2": [{
+                "stck_bsop_date": "20261019",
+                "stck_clpr": "100",
+            }]}, {}
+
+        with patch.object(
+            bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 19))
+        ), patch.object(bot, "api_request", side_effect=page_response), \
+             patch.object(bot.time, "sleep"):
+            closes = bot.get_daily_closes("fake", "360750", target_count=1, adjusted=True)
+        self.assertEqual(closes, [100.0])
+
     def test_current_price_requests_for_each_new_canary_are_read_only(self):
         for code in ("251350", "195980", "437080"):
             with self.subTest(code=code), patch.object(
