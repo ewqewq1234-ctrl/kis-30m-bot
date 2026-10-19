@@ -69,12 +69,20 @@ def verify_quote(token, code):
         raise bot.TradeSafetyError(f"{code} KIS quote output missing")
     response_code = str(output.get("stck_shrn_iscd") or "").strip()
     name = str(output.get("hts_kor_isnm") or "").strip()
+    raw_price = output.get("stck_prpr")
     try:
-        price = float(str(output.get("stck_prpr", "")).replace(",", ""))
+        price = float(str(raw_price or "").replace(",", ""))
     except (ValueError, TypeError):
-        raise bot.TradeSafetyError(f"{code} KIS current price malformed")
+        raise bot.TradeSafetyError(
+            f"{code} KIS current price malformed; returned_code={response_code or '<missing>'}; "
+            f"product={name or '<missing>'}"
+        )
     if response_code != code or not name or not math.isfinite(price) or price <= 0:
-        raise bot.TradeSafetyError(f"{code} KIS quote identity/price verification failed")
+        raise bot.TradeSafetyError(
+            f"{code} KIS quote identity/price verification failed; "
+            f"returned_code={response_code or '<missing>'}; "
+            f"product={name or '<missing>'}; price={raw_price!r}"
+        )
     expected_name = EXPECTED_DEFENSE_NAMES.get(code)
     if expected_name and normalized_name(name) != normalized_name(expected_name):
         raise bot.TradeSafetyError(
