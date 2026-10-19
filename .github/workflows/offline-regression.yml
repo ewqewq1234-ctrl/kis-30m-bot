@@ -31,7 +31,7 @@ jobs:
       ENABLE_LIVE_ORDERS: 'NO'
       FORCE_BAA: 'N'
       GITHUB_STATE_MODE: 'off'
-      BOT_STATE_DIR: ${{ runner.temp }}/offline-state
+      BOT_STATE_DIR: ${{ github.workspace }}/offline-state
       PYTHONUNBUFFERED: '1'
     steps:
       - uses: actions/checkout@v4
