@@ -32,8 +32,8 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       KIS_ENV: real
-      DRY_RUN: 'Y'
-      ENABLE_LIVE_ORDERS: 'NO'
+      DRY_RUN: 'N'
+      ENABLE_LIVE_ORDERS: 'YES'
       FORCE_BAA: 'N'
       GITHUB_STATE_MODE: git
       BOT_STATE_DIR: ${{ github.workspace }}/persistent_state
