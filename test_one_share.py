@@ -89,13 +89,31 @@ class OneShareTests(unittest.TestCase):
             bot.run_intraday("fake", {}, 10_000_000, 10_000_000)
         self.assertEqual(order.call_args.args[2], 1)
 
-    def test_baa_target_is_not_replaced_when_it_selects_069500(self):
-        closes = [100.0] * 252
+    def test_baa_aggressive_ranking_excludes_short_term_ticker(self):
+        requested = []
+
+        def daily_closes(token, code, target_count=252):
+            requested.append(code)
+            slope = {"069500": 10, "133690": 1, "122630": 2, "381180": 3}.get(code, 1)
+            return [100.0 + slope * index for index in range(252)]
+
         with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 11, 10))), \
-             patch.object(bot, "select_baa_target", return_value=("069500", "KODEX 200", False, [], closes)), \
+             patch.object(bot, "get_daily_closes", side_effect=daily_closes):
+            target, _, defensive, _, _ = bot.select_baa_target("fake")
+        self.assertFalse(defensive)
+        self.assertNotIn(bot.CODE_BULL, bot.ATTACK_UNIVERSE)
+        self.assertNotEqual(target, bot.CODE_BULL)
+        self.assertEqual(target, "381180")
+        self.assertIn(bot.CODE_BULL, requested)  # retained only for Canary assessment
+        self.assertEqual(len(bot.ATTACK_UNIVERSE), 3)
+
+    def test_legacy_baa_069500_record_halts_even_with_zero_tracked_shares(self):
+        self.write("baa_state.json", {"target_code": bot.CODE_BULL, "owned_qty": 0})
+        with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 11, 10))), \
+             patch.object(bot, "select_baa_target", return_value=("423160", "KOFR", True, [], [100.0] * 252)), \
              patch.object(bot, "get_current_price", return_value=1000), \
              patch.object(bot, "execute_order") as order:
-            with self.assertRaisesRegex(bot.TradeSafetyError, "069500"):
+            with self.assertRaisesRegex(bot.TradeSafetyError, "수동 계좌 대조"):
                 bot.run_baa("fake", {}, 100000, 100000)
         order.assert_not_called()
 

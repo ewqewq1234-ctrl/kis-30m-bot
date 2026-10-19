@@ -67,13 +67,14 @@ TIME_STOP_MINUTES = 90       # 기존 코드에서 미구현: 자동 활성화�
 DAY_BUDGET_RATIO = 0.30
 WEIGHT_BASE = 0.50
 WEIGHT_PYRAMID = 0.50
+BAA_TARGET_RATIO = 0.80
 
 CANARY_UNIVERSE = {
     "360750": "TIGER 미국S&P500", "069500": "KODEX 200",
     "371460": "TIGER 차이나전기차SOLACTIVE", "453850": "ACE 미국종합채권액티브",
 }
 ATTACK_UNIVERSE = {
-    "133690": "TIGER 미국나스닥100", "069500": "KODEX 200",
+    "133690": "TIGER 미국나스닥100",
     "122630": "KODEX 레버리지", "381180": "TIGER 미국필라델피아반도체나스닥",
 }
 DEFENSE_UNIVERSE = {
@@ -81,7 +82,6 @@ DEFENSE_UNIVERSE = {
     "449170": "KODEX 미국달러SOFR금리액티브(합성)",
     "453850": "ACE 미국종합채권액티브", "411060": "ACE KRX금현물",
 }
-BAA_UNIVERSE = set(ATTACK_UNIVERSE) | set(DEFENSE_UNIVERSE)
 SESSION = requests.Session()
 ACCESS_TOKEN = None
 # In-process counter: increments only after durable journal checkpoint, before order POST.
@@ -980,6 +980,8 @@ def select_baa_target(token):
     if is_defense:
         scores = {code: calc_fast_baa(closes(code)) for code in DEFENSE_UNIVERSE}
     target = max(scores, key=scores.get)
+    if not is_defense and target == CODE_BULL:
+        fail("069500은 단기매매 전용으로 공격형 BAA 선정에서 제외되어야 합니다")
     name = (DEFENSE_UNIVERSE if is_defense else ATTACK_UNIVERSE)[target]
     return target, name, is_defense, canary_logs, closes(target)
 
@@ -1031,7 +1033,7 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
     sma60 = sum(target_closes[-60:]) / 60
     is_bull = sma20 >= sma60
     # Total-asset target = 80%, *not* available-cash target. Reinvestment already in NAV.
-    total_budget = total_asset * 0.80
+    total_budget = total_asset * BAA_TARGET_RATIO
     target_stage_budget = total_budget if is_bull else total_budget * 0.50
     intended_value = target_stage_budget * 0.96
     target_total_qty = int(intended_value // curr_target_price)
@@ -1045,8 +1047,8 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
         fail("BAA 타깃이 단타 보유 069500과 충돌: 리밸런싱 매매 차단")
     if code == CODE_BULL:
         fail("BAA 타깃 069500은 단타와 계좌 내 물량 식별 불가: 매매 차단 (계좌 분리 필요)")
-    if old_code == CODE_BULL and tracked_qty:
-        fail("기존 BAA 069500 보유는 계좌 분리 또는 수동 정리 필요")
+    if old_code == CODE_BULL:
+        fail("기존 BAA 069500 상태 기록이 있습니다. 자동 편입/청산 금지, 수동 계좌 대조 필요")
     if tracked_qty > holdings.get(old_code, {}).get("qty", 0):
         fail("BAA 추적 보유량과 실제 잔고 불일치")
     # Without owner record, must not liquidate user's other holdings.
