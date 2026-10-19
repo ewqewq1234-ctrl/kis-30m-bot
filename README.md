@@ -2,20 +2,37 @@
 
 ## Trading safeguards
 
-- Live-order execution is disabled by default. Keep `DRY_RUN=Y`,
-  `ENABLE_LIVE_ORDERS=NO`, and `FORCE_BAA=N` until account/ledger reconciliation,
-  open-order review, and final operator approval are complete.
-- Live orders are blocked before 2026-10-20 in Korea Standard Time, even if the
-  live-order environment switches are enabled early.
+- The code defaults to disabled live execution. The production workflow is
+  configured for `KIS_ENV=real`, `DRY_RUN=N`, `ENABLE_LIVE_ORDERS=YES`, and
+  `FORCE_BAA=N`; the execution-time guard blocks live orders before
+  2026-10-20 in Korea Standard Time.
 - KODEX 200 (`069500`) is reserved for short-term trading. New buys are limited
   to one share, and the broker balance is checked again immediately before a
   buy intent is written. A balance/ledger mismatch, unresolved order, or
   uncertain API result halts new orders.
-- `069500` remains in the Canary set but is excluded from aggressive BAA
-  candidates and momentum ranking. The aggressive BAA candidate count is
-  temporarily three until a fourth ETF is verified against the KIS market-data
-  API. The 13-day rebalance interval, momentum calculation, trend filters,
-  defensive allocation, and 96% cash buffer remain unchanged.
+- The four BAA Canary assets are `360750` TIGER 미국S&P500, `251350` KODEX
+  MSCI선진국, `195980` PLUS 신흥국MSCI(합성 H), and `437080` KODEX
+  미국종합채권ESG액티브(H). KODEX 200 (`069500`) remains DAY-only and is
+  excluded from both Canary scoring and aggressive BAA ranking.
+- `251350` follows a developed-markets index that includes US stocks, so it is
+  not an exact equivalent of VEA (developed markets excluding the US).
+  `437080` is an ESG-screened US total-bond product and may differ in holdings
+  and exclusions from BND. The requested `195980` label uses the current PLUS
+  brand. The configured daily-history request uses unadjusted closes
+  (`FID_ORG_ADJ_PRC=0`), so corporate actions and distributions may affect
+  comparisons. The isolated read-only KIS verifier checks current quotes,
+  product identity, 252-session unadjusted histories, and adjusted-versus-
+  unadjusted return/score differences for the new Canary assets. The strategy
+  continues to use unadjusted closes; the adjusted data is for verification
+  only. Do not merge this change into production until the verifier passes.
+- Defensive BAA ticker codes remain `423160`, `449170`, `453850`, and `411060`.
+  `449170` is labeled TIGER KOFR금리액티브(합성), not a USD SOFR fund;
+  `453850` is labeled ACE 미국30년국채액티브(H). `423160` and `449170` may
+  provide overlapping KOFR-related exposure. Display-name updates do not
+  modify historical transactions, holdings, strategy ownership, or state.
+- The aggressive BAA candidate set remains three ETFs, with `069500` excluded.
+  The 80% target allocation, 13-day rebalance interval, momentum calculation,
+  trend filters, defensive allocation, and 96% cash buffer remain unchanged.
 - BAA uses a default target of 80% of total assets in an uptrend and retains
   the existing 50% reduction in a downtrend. Actual post-sale cash is checked
   before a follow-up purchase.
@@ -72,3 +89,9 @@ python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py
 
 The Ubuntu regression workflow runs the proposed suite with outbound socket
 connections blocked. These tests do not submit KIS order requests.
+The separate `.github/workflows/kis-market-data-verification.yml` workflow is
+manual and read-only: its API allowlist permits quote, product-master, and
+history GET requests plus OAuth token issuance only, blocks all order
+endpoints, uses temporary runner state, and reads only the encrypted KIS token
+cache from `bot-state` when available. It never reads or writes the persisted
+trading ledger or strategy state and never writes to `bot-state`.

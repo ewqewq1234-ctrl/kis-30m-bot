@@ -341,7 +341,9 @@ class FullCoverageTests(unittest.TestCase):
             bot.rebuild_strategy_state()
             return True, qty
         with self.fixed_time(), patch.object(bot, 'DRY_RUN', False), \
-             patch.object(bot, 'select_baa_target', return_value=('449170', 'SOFR', True, [], [100.] * 252)), \
+             patch.object(bot, 'select_baa_target', return_value=(
+                 '449170', bot.DEFENSE_UNIVERSE['449170'], True, [], [100.] * 252
+             )), \
              patch.object(bot, 'get_current_price', return_value=100000), \
              patch.object(bot, 'execute_order', side_effect=fake_order), \
              patch.object(bot, 'get_account_balance', return_value=({}, 964929, 964929)), \
@@ -698,9 +700,9 @@ class StrategyAndIntegrationTests(unittest.TestCase):
 
     def test_baa_defensive_target_when_canary_negative(self):
         def fake_closes(token,code,target_count=252):
-            if code=='069500':return [110.]*251+[90.]
-            if code=='423160':return [100.]*251+[110.]
-            return [100.]*252
+            if code=='251350':return [110.]*251+[90.]
+            if code=='423160':return [100.+i*3 for i in range(252)]
+            return [100.+i for i in range(252)]
         with patch.object(bot,'get_daily_closes',side_effect=fake_closes):
             code,name,is_defense,logs,closes=bot.select_baa_target('fake')
         self.assertTrue(is_defense)
