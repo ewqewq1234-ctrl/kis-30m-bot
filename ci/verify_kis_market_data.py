@@ -251,8 +251,8 @@ def main():
     print(f"FINAL NEW MODE: {'DEFENSIVE' if new[2] else 'AGGRESSIVE'} target={new[0]}")
     print(f"COMPARISON old={('DEFENSIVE' if old[2] else 'AGGRESSIVE')} "
           f"new={('DEFENSIVE' if new[2] else 'AGGRESSIVE')}")
-    print("PRICE BASIS: KIS unadjusted close (FID_ORG_ADJ_PRC=0); "
-          "review corporate-action/distribution effects separately.")
+    print("PRICE BASIS: Strategy scores use KIS unadjusted closes "
+          "(FID_ORG_ADJ_PRC=0); adjusted-price effects are quantified above.")
 
 
 if __name__ == "__main__":
