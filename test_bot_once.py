@@ -701,7 +701,7 @@ class StrategyAndIntegrationTests(unittest.TestCase):
     def test_baa_defensive_target_when_canary_negative(self):
         def fake_closes(token,code,target_count=252):
             if code=='251350':return [110.]*251+[90.]
-            if code=='423160':return [100.]*251+[110.]
+            if code=='423160':return [100.+i*3 for i in range(252)]
             return [100.+i for i in range(252)]
         with patch.object(bot,'get_daily_closes',side_effect=fake_closes):
             code,name,is_defense,logs,closes=bot.select_baa_target('fake')
