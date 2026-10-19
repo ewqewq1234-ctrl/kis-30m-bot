@@ -11,6 +11,7 @@ import os
 import sys
 import json
 import time
+import math
 import fcntl
 import tempfile
 import html
@@ -71,8 +72,10 @@ WEIGHT_PYRAMID = 0.50
 BAA_TARGET_RATIO = 0.80
 
 CANARY_UNIVERSE = {
-    "360750": "TIGER 미국S&P500", "069500": "KODEX 200",
-    "371460": "TIGER 차이나전기차SOLACTIVE", "453850": "ACE 미국종합채권액티브",
+    "360750": "TIGER 미국S&P500",
+    "251350": "KODEX MSCI선진국",
+    "195980": "PLUS 신흥국MSCI(합성 H)",
+    "437080": "KODEX 미국종합채권ESG액티브(H)",
 }
 ATTACK_UNIVERSE = {
     "133690": "TIGER 미국나스닥100",
@@ -80,8 +83,9 @@ ATTACK_UNIVERSE = {
 }
 DEFENSE_UNIVERSE = {
     "423160": "KODEX KOFR금리액티브(합성)",
-    "449170": "KODEX 미국달러SOFR금리액티브(합성)",
-    "453850": "ACE 미국종합채권액티브", "411060": "ACE KRX금현물",
+    "449170": "TIGER KOFR금리액티브(합성)",
+    "453850": "ACE 미국30년국채액티브(H)",
+    "411060": "ACE KRX금현물",
 }
 SESSION = requests.Session()
 ACCESS_TOKEN = None
@@ -813,7 +817,8 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
 # ==============================================================================
 def get_daily_closes(token: str, code: str, target_count: int = 252) -> list:
     # 100 records maximum per request. 120-calendar-day windows avoid truncated history.
-    end = now_kst().date()
+    as_of = now_kst().date()
+    end = as_of
     by_date = {}
     for _ in range(7):
         start = end - timedelta(days=119)
@@ -824,10 +829,31 @@ def get_daily_closes(token: str, code: str, target_count: int = 252) -> list:
                                     "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
                                     "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0",
                                 })
-        for row in result.get("output2") or []:
-            day, close = str(row.get("stck_bsop_date", "")), number(row.get("stck_clpr"))
-            if len(day) == 8 and close > 0 and day <= now_kst().strftime("%Y%m%d"):
-                by_date[day] = float(close)
+        rows = result.get("output2")
+        if not isinstance(rows, list):
+            fail(f"{code} 일봉 응답 목록 누락/형식 오류")
+        for row in rows:
+            if not isinstance(row, dict):
+                fail(f"{code} 일봉 행 형식 오류")
+            day = row.get("stck_bsop_date")
+            if (not isinstance(day, str) or len(day) != 8
+                    or not day.isascii() or not day.isdigit()):
+                fail(f"{code} 일봉 날짜 형식 오류")
+            try:
+                session_date = datetime.strptime(day, "%Y%m%d").date()
+            except ValueError:
+                fail(f"{code} 일봉 날짜 형식 오류")
+            if session_date < start or session_date > end or session_date > as_of:
+                fail(f"{code} 일봉 날짜 범위 오류: {day}")
+            try:
+                close = float(str(row.get("stck_clpr", "")).replace(",", ""))
+            except (ValueError, TypeError):
+                fail(f"{code} 일봉 종가 형식 오류: {day}")
+            if not math.isfinite(close) or close <= 0:
+                fail(f"{code} 일봉 종가 비정상: {day}")
+            if day in by_date:
+                fail(f"{code} 일봉 날짜 중복: {day}")
+            by_date[day] = close
         if len(by_date) >= target_count:
             break
         end = start - timedelta(days=1)

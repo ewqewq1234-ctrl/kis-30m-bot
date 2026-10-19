@@ -2,11 +2,12 @@
 import re
 import unittest
 from contextlib import ExitStack
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 import bot_once as bot
+from ci.verify_kis_market_data import momentum_metrics, read_only_request
 import test_bot_once
 
 
@@ -114,8 +115,164 @@ class OneShareTests(unittest.TestCase):
         self.assertNotIn(bot.CODE_BULL, bot.ATTACK_UNIVERSE)
         self.assertNotEqual(target, bot.CODE_BULL)
         self.assertEqual(target, "381180")
-        self.assertIn(bot.CODE_BULL, requested)  # retained only for Canary assessment
+        self.assertNotIn(bot.CODE_BULL, requested)
+        self.assertTrue(set(bot.CANARY_UNIVERSE).issubset(requested))
         self.assertEqual(len(bot.ATTACK_UNIVERSE), 3)
+
+    def test_exact_canary_and_defensive_universes(self):
+        self.assertEqual(bot.CANARY_UNIVERSE, {
+            "360750": "TIGER 미국S&P500",
+            "251350": "KODEX MSCI선진국",
+            "195980": "PLUS 신흥국MSCI(합성 H)",
+            "437080": "KODEX 미국종합채권ESG액티브(H)",
+        })
+        self.assertEqual(bot.DEFENSE_UNIVERSE, {
+            "423160": "KODEX KOFR금리액티브(합성)",
+            "449170": "TIGER KOFR금리액티브(합성)",
+            "453850": "ACE 미국30년국채액티브(H)",
+            "411060": "ACE KRX금현물",
+        })
+        self.assertTrue({"069500", "371460", "453850"}.isdisjoint(bot.CANARY_UNIVERSE))
+        self.assertEqual(bot.CODE_BULL, "069500")
+        self.assertNotIn("069500", bot.ATTACK_UNIVERSE)
+        self.assertIn("453850", bot.DEFENSE_UNIVERSE)
+        self.assertEqual(set(bot.ATTACK_UNIVERSE), {"133690", "122630", "381180"})
+        self.assertEqual(bot.BAA_TARGET_RATIO, 0.80)
+
+    def test_comparison_metrics_use_existing_fast_baa_formula(self):
+        closes = [100.0 + index for index in range(252)]
+        returns, score = momentum_metrics(closes)
+        self.assertAlmostEqual(returns["1m"], closes[-1] / closes[-21] - 1)
+        self.assertAlmostEqual(returns["3m"], closes[-1] / closes[-63] - 1)
+        self.assertAlmostEqual(returns["6m"], closes[-1] / closes[-126] - 1)
+        self.assertAlmostEqual(returns["12m"], closes[-1] / closes[-252] - 1)
+        self.assertEqual(score, bot.calc_fast_baa(closes))
+
+    def test_market_data_verifier_blocks_order_endpoints(self):
+        with patch.object(bot, "api_request") as request:
+            with self.assertRaisesRegex(bot.TradeSafetyError, "blocked unexpected request"):
+                read_only_request(
+                    "POST", "/uapi/domestic-stock/v1/trading/order-cash", "fake"
+                )
+        request.assert_not_called()
+
+    def test_all_positive_canaries_select_aggressive_baa(self):
+        requested = []
+
+        def daily_closes(token, code, target_count=252):
+            requested.append(code)
+            slope = {"133690": 1, "122630": 2, "381180": 3}.get(code, 1)
+            return [100.0 + slope * index for index in range(252)]
+
+        with patch.object(bot, "get_daily_closes", side_effect=daily_closes):
+            target, _, defensive, logs, _ = bot.select_baa_target("fake")
+        self.assertFalse(defensive)
+        self.assertEqual(target, "381180")
+        self.assertEqual(len(logs), 4)
+        self.assertTrue(set(bot.CANARY_UNIVERSE).issubset(requested))
+
+    def test_one_nonpositive_canary_switches_to_defensive_baa(self):
+        def daily_closes(token, code, target_count=252):
+            if code == "195980":
+                return [110.0] * 251 + [90.0]
+            if code in bot.DEFENSE_UNIVERSE:
+                slope = {"423160": 3, "449170": 2, "453850": 1, "411060": 0}.get(code, 0)
+                return [100.0 + slope * index for index in range(252)]
+            return [100.0 + index for index in range(252)]
+
+        with patch.object(bot, "get_daily_closes", side_effect=daily_closes):
+            target, _, defensive, logs, _ = bot.select_baa_target("fake")
+        self.assertTrue(defensive)
+        self.assertEqual(target, "423160")
+        self.assertEqual(len(logs), 4)
+
+    def test_zero_canary_score_switches_to_defensive_baa(self):
+        def daily_closes(token, code, target_count=252):
+            if code == "437080":
+                return [100.0] * 252
+            if code in bot.DEFENSE_UNIVERSE:
+                slope = {"423160": 3, "449170": 2, "453850": 1, "411060": 0}.get(code, 0)
+                return [100.0 + slope * index for index in range(252)]
+            return [100.0 + index for index in range(252)]
+
+        with patch.object(bot, "get_daily_closes", side_effect=daily_closes):
+            target, _, defensive, _, _ = bot.select_baa_target("fake")
+        self.assertTrue(defensive)
+        self.assertEqual(target, "423160")
+
+    def test_kis_daily_history_paginates_sorts_and_returns_252_unique_closes(self):
+        as_of = datetime(2026, 10, 19)
+        requests = []
+
+        def page_response(method, path, token, **kwargs):
+            self.assertEqual(method, "GET")
+            self.assertEqual(path, "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice")
+            params = kwargs["params"]
+            self.assertEqual(params["FID_INPUT_ISCD"], "251350")
+            self.assertEqual(params["FID_ORG_ADJ_PRC"], "0")
+            start = datetime.strptime(params["FID_INPUT_DATE_1"], "%Y%m%d")
+            end = datetime.strptime(params["FID_INPUT_DATE_2"], "%Y%m%d")
+            requests.append((start, end))
+            rows = []
+            cursor = start
+            while cursor <= end:
+                if cursor.weekday() < 5:
+                    rows.append({
+                        "stck_bsop_date": cursor.strftime("%Y%m%d"),
+                        "stck_clpr": str(cursor.toordinal()),
+                    })
+                cursor += timedelta(days=1)
+            return {"output2": list(reversed(rows))}, {}
+
+        with patch.object(bot, "now_kst", return_value=bot.KST.localize(as_of)), \
+             patch.object(bot, "api_request", side_effect=page_response), \
+             patch.object(bot.time, "sleep"):
+            closes = bot.get_daily_closes("fake", "251350")
+        self.assertEqual(len(closes), 252)
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(closes, sorted(closes))
+        for prior, following in zip(requests, requests[1:]):
+            self.assertEqual(following[1].date() + timedelta(days=1), prior[0].date())
+
+    def test_current_price_requests_for_each_new_canary_are_read_only(self):
+        for code in ("251350", "195980", "437080"):
+            with self.subTest(code=code), patch.object(
+                bot, "api_request", return_value=({"output": {"stck_prpr": "12345"}}, {})
+            ) as request:
+                self.assertEqual(bot.get_current_price("fake", code), 12345)
+            request.assert_called_once()
+            self.assertEqual(request.call_args.args[:2], (
+                "GET", "/uapi/domestic-stock/v1/quotations/inquire-price"
+            ))
+            self.assertEqual(request.call_args.kwargs["params"]["FID_INPUT_ISCD"], code)
+
+    def test_kis_daily_history_rejects_duplicate_or_invalid_data(self):
+        valid = {"stck_bsop_date": "20261016", "stck_clpr": "1000"}
+        cases = [
+            ([valid, valid], "중복"),
+            ([{"stck_bsop_date": "20261016", "stck_clpr": "0"}], "종가"),
+            ([{"stck_bsop_date": "20261340", "stck_clpr": "1000"}], "날짜"),
+            ([{"stck_bsop_date": "20261016", "stck_clpr": "NaN"}], "종가"),
+        ]
+        for rows, expected in cases:
+            with self.subTest(rows=rows), \
+                 patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 19))), \
+                 patch.object(bot, "api_request", return_value=({"output2": rows}, {})), \
+                 patch.object(bot.time, "sleep"):
+                with self.assertRaisesRegex(bot.TradeSafetyError, expected):
+                    bot.get_daily_closes("fake", "251350")
+
+    def test_kis_daily_history_rejects_insufficient_data_and_api_failures(self):
+        with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 19))), \
+             patch.object(bot, "api_request", return_value=({"output2": []}, {})) as request, \
+             patch.object(bot.time, "sleep"):
+            with self.assertRaisesRegex(bot.TradeSafetyError, "일봉 부족"):
+                bot.get_daily_closes("fake", "437080")
+        self.assertEqual(request.call_count, 7)
+
+        with patch.object(bot, "api_request", side_effect=bot.TradeSafetyError("KIS GET failed")):
+            with self.assertRaisesRegex(bot.TradeSafetyError, "KIS GET failed"):
+                bot.get_daily_closes("fake", "195980")
 
     def test_legacy_baa_069500_record_halts_even_with_zero_tracked_shares(self):
         self.write("baa_state.json", {"target_code": bot.CODE_BULL, "owned_qty": 0})
@@ -130,7 +287,9 @@ class OneShareTests(unittest.TestCase):
     def test_baa_budget_uses_eighty_percent_of_total_assets(self):
         closes = [100.0] * 252
         with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 11, 10))), \
-             patch.object(bot, "select_baa_target", return_value=("449170", "SOFR", True, [], closes)), \
+        patch.object(bot, "select_baa_target", return_value=(
+            "449170", bot.DEFENSE_UNIVERSE["449170"], True, [], closes
+        )), \
              patch.object(bot, "get_current_price", return_value=1000), \
              patch.object(bot, "send_telegram") as telegram, \
              patch.object(bot, "DRY_RUN", True), \
