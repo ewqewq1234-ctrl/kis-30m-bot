@@ -105,8 +105,10 @@ def verify_product_identity(token, code):
         raise bot.TradeSafetyError(f"{code} KIS product master output missing")
     actual_code = str(output.get("pdno") or "").strip()
     name = str(output.get("prdt_abrv_name") or output.get("prdt_name") or "").strip()
-    if actual_code and actual_code != code:
-        raise bot.TradeSafetyError(f"{code} KIS product master code mismatch: {actual_code}")
+    if actual_code and actual_code not in (code, f"00000A{code}"):
+        raise bot.TradeSafetyError(
+            f"{code} KIS product master code mismatch: {actual_code}; product={name or '<missing>'}"
+        )
     if not name:
         raise bot.TradeSafetyError(f"{code} KIS product master name missing")
     expected_name = EXPECTED_PRODUCT_NAMES[code]
