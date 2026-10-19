@@ -277,7 +277,7 @@ class FullCoverageTests(unittest.TestCase):
         state = bot.load_json(bot.BAA_STATE_FILE, {})
         self.assertEqual(state['owned_qty'], 6)
         self.assertFalse(state.get('last_executed_date'))
-        self.assertEqual(int(964929 * .7 * .96 // 110800), 5)
+        self.assertEqual(int(964929 * .8 * .96 // 110800), 6)
 
     def test_baa_bearish_half_allocation_dry_run_preserves_six(self):
         self.owned()
@@ -290,7 +290,7 @@ class FullCoverageTests(unittest.TestCase):
             bot.run_baa('fake', {'423160': {'qty': 6, 'avg_price': 110785}}, 300159, 964929)
         order.assert_not_called()
         self.assertEqual(bot.load_json(bot.BAA_STATE_FILE, {})['owned_qty'], 6)
-        self.assertEqual(int(964929 * .7 * .5 * .96 // 110800), 2)
+        self.assertEqual(int(964929 * .8 * .5 * .96 // 110800), 3)
 
     def test_baa_live_mock_trims_exactly_one_without_real_api(self):
         self.owned()
@@ -307,7 +307,7 @@ class FullCoverageTests(unittest.TestCase):
             return True, qty
         with self.fixed_time(), patch.object(bot, 'DRY_RUN', False), \
              patch.object(bot, 'select_baa_target', return_value=('423160', 'KOFR', True, [], [100.] * 252)), \
-             patch.object(bot, 'get_current_price', return_value=110800), \
+             patch.object(bot, 'get_current_price', return_value=130000), \
              patch.object(bot, 'execute_order', side_effect=fake_order), \
              patch.object(bot, 'get_account_balance', return_value=({'423160':{'qty':5,'avg_price':110785}}, 410959, 964929)), \
              patch.object(bot, 'assert_no_pending'):
@@ -337,9 +337,9 @@ class FullCoverageTests(unittest.TestCase):
              patch.object(bot, 'get_account_balance', return_value=({}, 964929, 964929)), \
              patch.object(bot, 'assert_no_pending'):
             bot.run_baa('fake', holdings, 300159, 964929)
-        self.assertEqual(calls, [('423160', 6, '01'), ('449170', 6, '02')])
+        self.assertEqual(calls, [('423160', 6, '01'), ('449170', 7, '02')])
         state=bot.load_json(bot.BAA_STATE_FILE, {})
-        self.assertEqual((state['target_code'], state['owned_qty']), ('449170', 6))
+        self.assertEqual((state['target_code'], state['owned_qty']), ('449170', 7))
 
     def test_baa_broker_balance_mismatch_aborts_before_any_sale(self):
         self.owned()
@@ -391,7 +391,7 @@ class FullCoverageTests(unittest.TestCase):
         self.owned()
         with self.fixed_time(), patch.object(bot, 'DRY_RUN', False), \
              patch.object(bot, 'select_baa_target', return_value=('423160', 'KOFR', True, [], [100.] * 252)), \
-             patch.object(bot, 'get_current_price', return_value=110800), \
+             patch.object(bot, 'get_current_price', return_value=130000), \
              patch.object(bot, 'execute_order', side_effect=bot.TradeSafetyError('partial fill')):
             with self.assertRaisesRegex(bot.TradeSafetyError, 'partial fill'):
                 bot.run_baa('fake', {'423160':{'qty':6}}, 300159, 964929)
@@ -399,9 +399,9 @@ class FullCoverageTests(unittest.TestCase):
 
     def test_baa_live_mock_target_already_met_does_not_send_order(self):
         self.owned()
-        # choose a target price where 6 shares exactly match 70%*96% budget
-        price=107000
-        self.assertEqual(int(964929*.7*.96//price), 6)
+        # Choose a target price where 6 shares exactly match the 80%*96% budget.
+        price=110800
+        self.assertEqual(int(964929*.8*.96//price), 6)
         with self.fixed_time(), patch.object(bot, 'DRY_RUN', False), \
              patch.object(bot, 'select_baa_target', return_value=('423160', 'KOFR', True, [], [100.] * 252)), \
              patch.object(bot, 'get_current_price', return_value=price), \
