@@ -1,0 +1,59 @@
+name: Offline Ubuntu regression
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '*.py'
+      - 'ci/**'
+      - 'requirements.txt'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '*.py'
+      - 'ci/**'
+      - 'requirements.txt'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [baseline, proposed]
+    env:
+      DRY_RUN: 'Y'
+      ENABLE_LIVE_ORDERS: 'NO'
+      FORCE_BAA: 'N'
+      GITHUB_STATE_MODE: 'off'
+      BOT_STATE_DIR: ${{ runner.temp }}/offline-state
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proposed
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.source == 'baseline'
+        with:
+          ref: f2654b52013add12dcfdde18ea1be30d1508ecf5
+          path: baseline
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install -r proposed/requirements.txt
+      - name: Verify Linux tools
+        run: git --version && openssl version
+      - name: Baseline full regression
+        if: matrix.source == 'baseline'
+        run: python proposed/ci/run_offline_tests.py --source baseline test_bot_once test_api_resilience
+      - name: Proposed full regression
+        if: matrix.source == 'proposed'
+        run: python proposed/ci/run_offline_tests.py --source proposed test_bot_once test_api_resilience test_one_share
