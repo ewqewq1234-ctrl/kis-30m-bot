@@ -27,6 +27,7 @@ import pytz
 # 1. 환경 변수 및 글로벌 설정
 # ==============================================================================
 KST = pytz.timezone("Asia/Seoul")
+LIVE_TRADING_START_DATE = datetime(2026, 10, 20).date()
 BASE_DIR = Path(os.getenv("BOT_STATE_DIR", Path(__file__).resolve().parent)).resolve()
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_FILE = BASE_DIR / "token_cache.json"
@@ -730,6 +731,8 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
     """Return (fully_filled, confirmed_qty), never requested/accepted quantity."""
     if qty <= 0:
         return False, 0
+    if not DRY_RUN and now_kst().date() < LIVE_TRADING_START_DATE:
+        fail(f"실거래 시작일({LIVE_TRADING_START_DATE}) 이전에는 주문을 차단합니다")
     if order_type not in ("01", "02") or strategy not in ("DAY", "BAA"):
         fail("잘못된 주문 방향/전략")
     if ord_dvsn != "01":
