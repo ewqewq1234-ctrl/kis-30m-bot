@@ -5,6 +5,8 @@
 - Live-order execution is disabled by default. Keep `DRY_RUN=Y`,
   `ENABLE_LIVE_ORDERS=NO`, and `FORCE_BAA=N` until account/ledger reconciliation,
   open-order review, and final operator approval are complete.
+- Live orders are blocked before 2026-10-20 in Korea Standard Time, even if the
+  live-order environment switches are enabled early.
 - KODEX 200 (`069500`) is reserved for short-term trading. New buys are limited
   to one share, and the broker balance is checked again immediately before a
   buy intent is written. A balance/ledger mismatch, unresolved order, or

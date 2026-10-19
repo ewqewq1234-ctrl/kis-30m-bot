@@ -20,6 +20,11 @@ class BotSafetyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        start_date_patcher = patch.object(
+            bot, 'LIVE_TRADING_START_DATE', datetime(2026, 10, 14).date()
+        )
+        start_date_patcher.start()
+        self.addCleanup(start_date_patcher.stop)
         base = Path(self.tmp.name)
         for name in ('BASE_DIR', 'DAY_STATE_FILE', 'BAA_STATE_FILE', 'TRADE_HISTORY_FILE', 'RISK_STATE_FILE'):
             value = base if name == 'BASE_DIR' else base / {

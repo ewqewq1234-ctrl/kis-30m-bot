@@ -72,6 +72,16 @@ class OneShareTests(unittest.TestCase):
                 bot.execute_order("fake", "069500", 1, strategy="DAY")
         request.assert_not_called()
 
+    def test_live_orders_are_blocked_before_kst_start_date(self):
+        with patch.object(bot, "LIVE_TRADING_START_DATE", datetime(2026, 10, 20).date()), \
+             patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 19, 14, 0))), \
+             patch.object(bot, "DRY_RUN", False), \
+             patch.object(bot, "order_window", return_value=True), \
+             patch.object(bot, "api_request") as request:
+            with self.assertRaisesRegex(bot.TradeSafetyError, "시작일"):
+                bot.execute_order("fake", "423160", 1, strategy="BAA")
+        request.assert_not_called()
+
     def test_pending_order_blocks_additional_order(self):
         with patch.object(bot, "order_window", return_value=True), \
              patch.object(bot, "is_market_open_today", return_value=True), \
