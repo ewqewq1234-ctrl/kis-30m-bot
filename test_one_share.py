@@ -7,7 +7,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import bot_once as bot
-from ci.verify_kis_market_data import momentum_metrics, read_only_request
+from ci.verify_kis_market_data import (
+    EXPECTED_PRODUCT_NAMES,
+    momentum_metrics,
+    read_only_request,
+    verify_product_identity,
+)
 import test_bot_once
 
 
@@ -155,6 +160,27 @@ class OneShareTests(unittest.TestCase):
                     "POST", "/uapi/domestic-stock/v1/trading/order-cash", "fake"
                 )
         request.assert_not_called()
+
+    def test_product_identity_matches_kis_master_and_rejects_mismatches(self):
+        for code, expected_name in EXPECTED_PRODUCT_NAMES.items():
+            with self.subTest(code=code), patch(
+                "ci.verify_kis_market_data.read_only_request",
+                return_value=({"output": {
+                    "pdno": code,
+                    "prdt_abrv_name": expected_name,
+                }}, {}),
+            ):
+                verify_product_identity("fake", code)
+
+        with patch(
+            "ci.verify_kis_market_data.read_only_request",
+            return_value=({"output": {
+                "pdno": "455030",
+                "prdt_abrv_name": "KODEX USD SOFR",
+            }}, {}),
+        ):
+            with self.assertRaisesRegex(bot.TradeSafetyError, "code mismatch"):
+                verify_product_identity("fake", "449170")
 
     def test_all_positive_canaries_select_aggressive_baa(self):
         requested = []

@@ -27,6 +27,11 @@ EXPECTED_DEFENSE_NAMES = {
     "449170": bot.DEFENSE_UNIVERSE["449170"],
     "453850": bot.DEFENSE_UNIVERSE["453850"],
 }
+EXPECTED_PRODUCT_NAMES = {
+    **{code: bot.CANARY_UNIVERSE[code] for code in ("251350", "195980", "437080")},
+    **EXPECTED_DEFENSE_NAMES,
+}
+PRODUCT_INFO_PATH = "/uapi/domestic-stock/v1/quotations/search-stock-info"
 
 
 def normalized_name(value):
@@ -39,6 +44,7 @@ def read_only_request(method, path, token=None, **kwargs):
     if method != "GET" or path not in {
         "/uapi/domestic-stock/v1/quotations/inquire-price",
         "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+        PRODUCT_INFO_PATH,
     }:
         raise bot.TradeSafetyError(f"Read-only verifier blocked unexpected request: {method} {path}")
     response = API_REQUEST(method, path, token, **kwargs)
@@ -68,27 +74,47 @@ def verify_quote(token, code):
     if not isinstance(output, dict):
         raise bot.TradeSafetyError(f"{code} KIS quote output missing")
     response_code = str(output.get("stck_shrn_iscd") or "").strip()
-    name = str(output.get("hts_kor_isnm") or "").strip()
     raw_price = output.get("stck_prpr")
     try:
         price = float(str(raw_price or "").replace(",", ""))
     except (ValueError, TypeError):
         raise bot.TradeSafetyError(
             f"{code} KIS current price malformed; returned_code={response_code or '<missing>'}; "
-            f"product={name or '<missing>'}"
+            f"price={raw_price!r}"
         )
-    if response_code != code or not name or not math.isfinite(price) or price <= 0:
+    if response_code != code or not math.isfinite(price) or price <= 0:
         raise bot.TradeSafetyError(
             f"{code} KIS quote identity/price verification failed; "
             f"returned_code={response_code or '<missing>'}; "
-            f"product={name or '<missing>'}; price={raw_price!r}"
+            f"price={raw_price!r}"
         )
-    expected_name = EXPECTED_DEFENSE_NAMES.get(code)
-    if expected_name and normalized_name(name) != normalized_name(expected_name):
+    name = str(output.get("hts_kor_isnm") or "").strip() or "product name omitted by quote API"
+    print(f"QUOTE {code} | {name} | {price:.2f} KRW")
+
+
+def verify_product_identity(token, code):
+    result, _ = read_only_request(
+        "GET",
+        PRODUCT_INFO_PATH,
+        token,
+        tr_id="CTPF1604R",
+        params={"PRDT_TYPE_CD": "512", "PDNO": code},
+    )
+    output = result.get("output")
+    if not isinstance(output, dict):
+        raise bot.TradeSafetyError(f"{code} KIS product master output missing")
+    actual_code = str(output.get("pdno") or "").strip()
+    name = str(output.get("prdt_abrv_name") or output.get("prdt_name") or "").strip()
+    if actual_code and actual_code != code:
+        raise bot.TradeSafetyError(f"{code} KIS product master code mismatch: {actual_code}")
+    if not name:
+        raise bot.TradeSafetyError(f"{code} KIS product master name missing")
+    expected_name = EXPECTED_PRODUCT_NAMES[code]
+    if normalized_name(name) != normalized_name(expected_name):
         raise bot.TradeSafetyError(
             f"{code} KIS product name mismatch: expected {expected_name}; received {name}"
         )
-    print(f"QUOTE {code} | {name} | {price:.2f} KRW")
+    print(f"PRODUCT {code} | {name} | KIS product master verified")
 
 
 def momentum_metrics(closes):
@@ -132,6 +158,9 @@ def main():
     token = bot.get_access_token()
     for code in QUOTE_CODES:
         verify_quote(token, code)
+        time.sleep(0.2)
+    for code in EXPECTED_PRODUCT_NAMES:
+        verify_product_identity(token, code)
         time.sleep(0.2)
 
     required_codes = tuple(dict.fromkeys((

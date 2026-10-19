@@ -90,8 +90,8 @@ python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py
 The Ubuntu regression workflow runs the proposed suite with outbound socket
 connections blocked. These tests do not submit KIS order requests.
 The separate `.github/workflows/kis-market-data-verification.yml` workflow is
-manual and read-only: its API allowlist permits quote/history GET requests and
-OAuth token issuance only, blocks all order endpoints, uses temporary runner
-state, and reads only the encrypted KIS token cache from `bot-state` when
-available. It never reads or writes the persisted trading ledger or strategy
-state and never writes to `bot-state`.
+manual and read-only: its API allowlist permits quote, product-master, and
+history GET requests plus OAuth token issuance only, blocks all order
+endpoints, uses temporary runner state, and reads only the encrypted KIS token
+cache from `bot-state` when available. It never reads or writes the persisted
+trading ledger or strategy state and never writes to `bot-state`.
