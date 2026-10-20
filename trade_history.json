@@ -35,12 +35,14 @@
       "code": "423160",
       "side": "BUY",
       "requested_qty": 4,
-      "status": "ACCEPTED",
+      "status": "FILLED",
       "created_at": "2026-10-20 11:04:02",
       "odno": "0009867800",
       "applied_fill_qty": 0,
       "applied_fill_amount": 0,
-      "sell_cost_basis": 0.0
+      "sell_cost_basis": 0.0,
+      "confirmed_fill_qty": 4,
+      "confirmed_fill_amt": 443420
     }
   ]
 }
