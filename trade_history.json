@@ -43,6 +43,19 @@
       "sell_cost_basis": 0.0,
       "confirmed_fill_qty": 4,
       "confirmed_fill_amt": 443420
+    },
+    {
+      "id": "20261020-DAY-069500-SELL-칼손절",
+      "strategy": "DAY",
+      "code": "069500",
+      "side": "SELL",
+      "requested_qty": 1,
+      "status": "INTENT",
+      "created_at": "2026-10-20 13:36:49",
+      "odno": null,
+      "applied_fill_qty": 0,
+      "applied_fill_amount": 0,
+      "sell_cost_basis": 87375.0
     }
   ]
 }
