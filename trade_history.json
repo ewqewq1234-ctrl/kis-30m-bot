@@ -28,6 +28,19 @@
       "sell_cost_basis": 0.0,
       "confirmed_fill_qty": 1,
       "confirmed_fill_amt": 87375
+    },
+    {
+      "id": "20261020-BAA-423160-BUY-BAA 매수(KODEX KOFR금리액티브(합성))",
+      "strategy": "BAA",
+      "code": "423160",
+      "side": "BUY",
+      "requested_qty": 4,
+      "status": "INTENT",
+      "created_at": "2026-10-20 11:04:02",
+      "odno": null,
+      "applied_fill_qty": 0,
+      "applied_fill_amount": 0,
+      "sell_cost_basis": 0.0
     }
   ]
 }
