@@ -3,6 +3,8 @@ name: KIS Bot Persistent State
 on:
   workflow_dispatch:
   schedule:
+    # UTC Sunday-Thursday 23:52 is Monday-Friday 08:52 KST (previous-day UTC).
+    - cron: '52 23 * * 0-4'
     - cron: '3,13,21,32,38,49,54 0 * * 1-5'
     - cron: '7,14,23,36,42,53,58 1 * * 1-5'
     - cron: '7,21,28,33,46,52 2 * * 1-5'
