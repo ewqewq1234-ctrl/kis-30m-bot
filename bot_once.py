@@ -633,7 +633,8 @@ def adopt_verified_legacy_baa(token: str, holdings: dict):
 
 def default_swing_state():
     return {
-        "schema_version": 1, "strategy": "SWING", "migration_status": "READY",
+        "schema_version": 2, "strategy": "SWING", "migration_status": "PENDING",
+        "migration_completed_at": None, "position_id": None,
         "signal_date": None, "signal_status": None, "entry_signal_date": None,
         "entry_signal_close": None, "signal_atr14": None, "entry_atr14": None,
         "entry_opportunity_date": None,
@@ -646,49 +647,370 @@ def default_swing_state():
     }
 
 
+def _strict_journal_int(value, field, *, default=None):
+    if value is None and default is not None:
+        return default
+    if isinstance(value, bool):
+        fail(f"주문 원장 {field} 형식 오류")
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, str) and value.isascii() and value.isdigit():
+        result = int(value)
+    else:
+        fail(f"주문 원장 {field} 형식 오류")
+    if result < 0:
+        fail(f"주문 원장 {field} 음수 오류")
+    return result
+
+
+def _journal_order_time(order):
+    value = order.get("created_at")
+    if not isinstance(value, str):
+        fail("주문 원장 생성 시각 누락/형식 오류")
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        fail("주문 원장 생성 시각 누락/형식 오류")
+
+
+def _terminal_fill_evidence(order):
+    """Validate a terminal order's broker-confirmed fill and residual quantity."""
+    status = order.get("status")
+    if status not in {"FILLED", "CANCELED", "REJECTED"}:
+        fail(f"미확정 주문은 SWING 마이그레이션/원장 재구성에 사용할 수 없습니다: {status}")
+    requested = _strict_journal_int(order.get("requested_qty"), "requested_qty")
+    if requested <= 0:
+        fail("주문 원장 요청 수량 오류")
+    filled = _strict_journal_int(order.get("confirmed_fill_qty"), "confirmed_fill_qty")
+    amount_value = order.get("confirmed_fill_amt")
+    if isinstance(amount_value, bool):
+        fail("주문 원장 confirmed_fill_amt 형식 오류")
+    try:
+        amount = float(amount_value)
+    except (TypeError, ValueError):
+        fail("주문 원장 confirmed_fill_amt 누락/형식 오류")
+    if not math.isfinite(amount) or amount < 0:
+        fail("주문 원장 confirmed_fill_amt 범위 오류")
+    if filled > requested or (filled and amount <= 0) or (not filled and amount != 0):
+        fail("주문 원장 체결 수량/금액이 일치하지 않습니다")
+    if status == "FILLED" and filled != requested:
+        fail("FILLED 주문의 확정 체결 수량이 요청 수량과 다릅니다")
+    if status in {"CANCELED", "REJECTED"} and filled == requested:
+        fail(f"{status} 주문이 요청 수량 전체 체결로 기록되어 있습니다")
+    if status == "CANCELED":
+        canceled_value = order.get("confirmed_cancel_qty")
+        if canceled_value is not None:
+            canceled = _strict_journal_int(canceled_value, "confirmed_cancel_qty")
+            if filled + canceled != requested:
+                fail("CANCELED 주문의 체결/취소 수량이 요청 수량과 다릅니다")
+        # Older journal entries store only terminal CANCELED; reconcile wrote
+        # that status only after confirmed fills plus broker cancellations closed it.
+    if status == "REJECTED" and filled < requested:
+        rejected_value = order.get("confirmed_rejected_qty")
+        if filled == 0 and rejected_value is None:
+            rejected = requested
+        elif rejected_value is None:
+            fail("일부 체결된 REJECTED 주문의 잔여 거절 수량 증거가 없습니다")
+        else:
+            rejected = _strict_journal_int(rejected_value, "confirmed_rejected_qty")
+        if filled + rejected != requested:
+            fail("REJECTED 주문의 체결/거절 수량이 요청 수량과 다릅니다")
+    return requested, filled, amount
+
+
+def _validate_swing_state(state):
+    version = state.get("schema_version") if isinstance(state, dict) else None
+    if (not isinstance(state, dict) or state.get("strategy") != "SWING"
+            or type(version) is not int or version not in (1, 2)):
+        fail("SWING 상태 버전/전략 식별 오류")
+    owned = _strict_journal_int(state.get("owned_qty", 0), "SWING owned_qty")
+    if owned > 1:
+        fail("SWING 상태 보유량이 1주 상한을 초과합니다")
+    if state.get("schema_version") == 2:
+        position_id = state.get("position_id")
+        if position_id is not None and (not isinstance(position_id, str) or not position_id):
+            fail("SWING 상태 position_id 형식 오류")
+        completed_at = state.get("migration_completed_at")
+        if completed_at is not None:
+            if not isinstance(completed_at, str):
+                fail("SWING migration_completed_at 형식 오류")
+            try:
+                datetime.strptime(completed_at, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                fail("SWING migration_completed_at 형식 오류")
+    for key in ("signal_date", "entry_signal_date", "entry_opportunity_date",
+                "last_processed_bar_date", "last_exit_session", "entry_session"):
+        value = state.get(key)
+        if value is not None:
+            if not isinstance(value, str):
+                fail(f"SWING 상태 {key} 형식 오류")
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError:
+                fail(f"SWING 상태 {key} 형식 오류")
+    for key in ("entry_signal_close", "signal_atr14", "entry_atr14",
+                "verified_entry_price", "initial_stop", "active_stop",
+                "highest_completed_close"):
+        value = state.get(key)
+        if value is not None:
+            if isinstance(value, bool):
+                fail(f"SWING 상태 {key} 형식 오류")
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                fail(f"SWING 상태 {key} 형식 오류")
+            if not math.isfinite(parsed):
+                fail(f"SWING 상태 {key} 범위 오류")
+            if key in ("initial_stop", "active_stop"):
+                continue
+            if key == "verified_entry_price":
+                if parsed < 0:
+                    fail(f"SWING 상태 {key} 범위 오류")
+            elif parsed <= 0:
+                fail(f"SWING 상태 {key} 범위 오류")
+    if state.get("exit_intent") not in (None, "TREND", "PROTECTIVE_STOP"):
+        fail("SWING 상태 exit_intent 형식 오류")
+    for key in ("entry_order_intent_id", "exit_order_intent_id"):
+        value = state.get(key)
+        if value is not None and (not isinstance(value, str) or not value):
+            fail(f"SWING 상태 {key} 형식 오류")
+    if owned:
+        identity = (state.get("position_id") if state.get("schema_version") == 2
+                    else state.get("entry_order_intent_id"))
+        if not identity or state.get("entry_order_intent_id") not in (None, identity):
+            fail("SWING 보유 상태의 position identity가 없습니다")
+        for key in ("verified_entry_price", "entry_atr14", "initial_stop", "active_stop"):
+            if state.get(key) is None:
+                fail(f"SWING 보유 상태의 {key}가 없습니다")
+        if float(state["verified_entry_price"]) <= 0 or float(state["entry_atr14"]) <= 0:
+            fail("SWING 보유 상태의 진입가/ATR이 비정상입니다")
+        if state.get("entry_session") is None:
+            fail("SWING 보유 상태의 entry_session이 없습니다")
+    elif state.get("exit_intent") or state.get("exit_order_intent_id"):
+        fail("SWING 보유가 없는 상태에 청산 의도가 남아 있습니다")
+    if state.get("migration_status") not in (None, "READY", "PENDING", "COMPLETE"):
+        fail("SWING 마이그레이션 상태 형식 오류")
+    if state.get("migration_status") == "COMPLETE" and not state.get("migration_completed_at"):
+        fail("SWING 마이그레이션 완료 시각 누락")
+    return state
+
+
+def _migration_legacy_positions(entries, day, baa):
+    if not isinstance(entries, list) or any(not isinstance(order, dict) for order in entries):
+        fail("069500 원장 기록이 모호합니다. SWING 자동화를 중단합니다")
+    ids = [order.get("id") for order in entries]
+    if any(not isinstance(value, str) or not value for value in ids) or len(ids) != len(set(ids)):
+        fail("주문 원장 식별자가 누락되었거나 중복되었습니다")
+
+    relevant = []
+    for index, order in enumerate(entries):
+        strategy, code = order.get("strategy"), order.get("code")
+        if strategy == "SWING" and code != CODE_BULL:
+            fail("SWING 원장에 허용되지 않은 종목이 있습니다")
+        if code == CODE_BULL:
+            if strategy not in {"DAY", "BAA", "SWING"}:
+                fail("069500 과거 주문의 전략/종목 소유권이 모호합니다")
+            relevant.append((index, order))
+
+    net_by_strategy = {"DAY": 0, "BAA": 0, "SWING": 0}
+    for _, order in sorted(relevant, key=lambda item: (_journal_order_time(item[1]), item[0])):
+        strategy = order["strategy"]
+        if order.get("side") not in {"BUY", "SELL"}:
+            fail("069500 과거 주문 방향이 누락되었거나 지원되지 않습니다")
+        _, filled, _ = _terminal_fill_evidence(order)
+        delta = filled if order["side"] == "BUY" else -filled
+        net_by_strategy[strategy] += delta
+        if net_by_strategy[strategy] < 0:
+            fail(f"069500 {strategy} 매도 체결이 확인된 보유량을 초과합니다")
+    if net_by_strategy["DAY"] != 0:
+        fail("과거 DAY 체결의 순보유량이 0이 아닙니다. 자동 마이그레이션 차단")
+    if net_by_strategy["BAA"] != 0:
+        fail("과거 BAA 069500 체결의 소유권이 해소되지 않았습니다")
+
+    owned = _strict_journal_int(day.get("owned_qty", 0), "DAY owned_qty")
+    if owned or day.get("entry_time") not in (None, "") or day.get("pyramided") not in (None, False):
+        fail("과거 DAY 상태 파일에 미해결 보유/진입 정보가 있습니다")
+    if baa.get("target_code") == CODE_BULL:
+        fail("BAA 상태가 069500 소유권 충돌을 나타냅니다")
+    _strict_journal_int(baa.get("owned_qty", 0), "BAA owned_qty")
+    return net_by_strategy
+
+
 def migrate_swing_state_if_safe(holdings: dict):
     exists = SWING_STATE_FILE.exists()
     if exists:
-        state = load_json(SWING_STATE_FILE, {})
-        if state.get("schema_version") != 1 or state.get("strategy") != "SWING":
-            fail("SWING 상태 버전/전략 식별 오류")
+        state = _validate_swing_state(load_json(SWING_STATE_FILE, {}))
+    else:
+        state = default_swing_state()
     day = load_json(DAY_STATE_FILE, {})
     baa = load_json(BAA_STATE_FILE, {})
     entries = read_journal().get("orders", [])
-    if not isinstance(entries, list) or any(not isinstance(order, dict) for order in entries):
-        fail("069500 원장 기록이 모호합니다. SWING 자동화를 중단합니다")
-    legacy_records = [
-        order for order in entries
-        if order.get("strategy") == "DAY"
-        or (order.get("code") == CODE_BULL and order.get("strategy") != "SWING")
-    ]
-    if (number(day.get("owned_qty")) or day.get("entry_time") or day.get("pyramided")
-            or legacy_records or baa.get("target_code") == CODE_BULL):
-        fail("069500 legacy DAY/BAA 상태 또는 잔고가 남아 있습니다. SWING 마이그레이션은 수동 대조 후에만 허용됩니다")
+    strategy_net = _migration_legacy_positions(entries, day, baa)
+    journal_position, _, _, pending_swing, _ = _derive_swing_position(entries)
+    if pending_swing:
+        fail("미확정 SWING 주문이 있어 마이그레이션/상태 검증을 중단합니다")
     actual_qty = share_quantity(holdings.get(CODE_BULL, {}).get("qty", 0))
-    if (not exists and actual_qty) or (exists and actual_qty != share_quantity(state.get("owned_qty", 0))):
-        fail("069500 SWING 상태와 계좌 잔고가 일치하지 않습니다")
-    if exists:
+    state_qty = share_quantity(state.get("owned_qty", 0))
+    if state.get("migration_status") == "COMPLETE":
+        if state.get("schema_version") != 2 or not state.get("migration_completed_at"):
+            fail("SWING 마이그레이션 완료 표식/스키마가 유효하지 않습니다")
+        if actual_qty != state_qty or strategy_net["SWING"] != state_qty:
+            fail("069500 SWING 상태와 계좌 잔고가 일치하지 않습니다")
+        if state_qty:
+            expected_stop = float(state["verified_entry_price"]) - 2 * float(state["entry_atr14"])
+            if (journal_position is None
+                    or state.get("position_id") != journal_position["position_id"]
+                    or state.get("entry_order_intent_id") != state.get("position_id")
+                    or state.get("entry_session") is None
+                    or state.get("initial_stop") is None
+                    or not math.isclose(float(state["initial_stop"]), expected_stop, abs_tol=1.0)
+                    or state.get("active_stop") is None):
+                fail("완료된 SWING 마이그레이션의 포지션 상태가 불완전합니다")
+            active_stop = float(state["active_stop"])
+            high = state.get("highest_completed_close")
+            if active_stop < expected_stop - 1:
+                fail("완료된 SWING 포지션의 활성 스톱이 초기 스톱보다 낮습니다")
+            if high is None and not math.isclose(active_stop, expected_stop, abs_tol=1.0):
+                fail("완료된 SWING 포지션의 고점/활성 스톱 상태가 일치하지 않습니다")
+            if high is not None and active_stop > max(
+                    expected_stop, float(high) - 3 * float(state["entry_atr14"])) + 1:
+                fail("완료된 SWING 포지션의 활성 스톱이 고점 기반 값보다 높습니다")
+        elif (journal_position is not None or float(state.get("verified_entry_price") or 0) != 0
+              or any(state.get(key) is not None for key in (
+                "position_id", "entry_session", "entry_atr14", "initial_stop",
+                "active_stop", "highest_completed_close", "exit_intent",
+                "exit_order_intent_id", "entry_order_intent_id"))):
+            fail("보유가 없는 SWING 상태에 포지션 전용 정보가 남아 있습니다")
         return state
-    state = default_swing_state()
+    if actual_qty != 0 or state_qty != 0 or strategy_net["SWING"] != 0 or journal_position is not None:
+        fail("SWING 마이그레이션 전 실제 계좌 잔고와 추적 보유량이 모두 0이어야 합니다")
+    if (state.get("entry_opportunity_status") == "SUBMITTING"
+            or state.get("entry_order_intent_id") or state.get("exit_intent")
+            or state.get("exit_order_intent_id")):
+        fail("미확정 SWING 주문 상태가 있어 마이그레이션을 중단합니다")
+    if exists and state.get("schema_version") == 2 and state.get("migration_status") not in ("PENDING", "READY"):
+        fail("SWING 마이그레이션 상태 형식 오류")
+    state.update({
+        "schema_version": 2,
+        "strategy": "SWING",
+        "position_id": None, "owned_qty": 0, "verified_entry_price": 0.0,
+        "entry_atr14": None, "entry_session": None, "initial_stop": None,
+        "active_stop": None, "highest_completed_close": None,
+        "entry_order_intent_id": None, "exit_intent": None,
+        "exit_order_intent_id": None,
+        "migration_status": "COMPLETE",
+        "migration_completed_at": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
+    })
     save_json(SWING_STATE_FILE, state)
     return state
 
 
-def rebuild_strategy_state():
-    """Rebuild position ownership from the journal (source of truth).
+def _derive_swing_position(entries):
+    orders = []
+    seen_ids = set()
+    for index, order in enumerate(entries):
+        if order.get("strategy") != "SWING":
+            continue
+        if order.get("code") != CODE_BULL or order.get("side") not in {"BUY", "SELL"}:
+            fail("SWING 원장에 지원되지 않는 종목/방향이 있습니다")
+        order_id = order.get("id")
+        if not isinstance(order_id, str) or not order_id or order_id in seen_ids:
+            fail("SWING 원장 주문 식별자가 누락되었습니다")
+        seen_ids.add(order_id)
+        created_at = _journal_order_time(order)
+        status = order.get("status")
+        if status in {"INTENT", "UNCERTAIN", "ACCEPTED", "PARTIAL", "UNKNOWN"}:
+            requested = _strict_journal_int(order.get("requested_qty"), "requested_qty")
+            filled = _strict_journal_int(
+                order.get("confirmed_fill_qty"), "confirmed_fill_qty", default=0
+            )
+            if requested != 1 or filled:
+                fail("미확정 SWING 주문의 수량/체결은 포지션 전이에 사용할 수 없습니다")
+            if status == "PARTIAL":
+                fail("PARTIAL SWING 주문에 확정 체결 수량이 없습니다")
+            if "confirmed_fill_amt" in order:
+                try:
+                    confirmed_amount = float(order["confirmed_fill_amt"])
+                except (TypeError, ValueError):
+                    fail("미확정 SWING 주문의 체결 금액 형식 오류")
+                if not math.isfinite(confirmed_amount) or confirmed_amount != 0:
+                    fail("미확정 SWING 주문에 확정되지 않은 체결 금액이 있습니다")
+            orders.append((created_at, index, order, 0, 0.0, True))
+        else:
+            requested, filled, amount = _terminal_fill_evidence(order)
+            if requested != 1:
+                fail("SWING 주문 수량이 1주 한도를 위반합니다")
+            orders.append((created_at, index, order, filled, amount, False))
 
-    Thus, a crash between saving a fill and saving strategy state does not
-    double-apply it on the next run. Any pre-existing legacy position that was
-    not recorded in this journal is intentionally NOT adopted.
-    """
-    entries = read_journal().get("orders", [])
+    current = None
+    last_exit_session = None
+    last_closed_position_id = None
+    pending = []
+    terminal_ids = {}
+    for created_at, _, order, filled, amount, unresolved in sorted(
+            orders, key=lambda item: (item[0], item[1])):
+        order_id = order["id"]
+        if unresolved:
+            pending.append(order)
+            continue
+        terminal_ids[order_id] = order
+        if not filled:
+            continue
+        if order["side"] == "BUY":
+            if current is not None or filled != 1 or number(order.get("requested_qty")) != 1:
+                fail("SWING 추가매수/잘못된 수량의 체결 기록이 있습니다")
+            metadata = order.get("strategy_metadata")
+            if not isinstance(metadata, dict):
+                fail("SWING 매수 체결 원장에 전략 메타데이터가 없습니다")
+            try:
+                entry_atr = float(metadata.get("entry_atr14"))
+                entry_session = metadata.get("entry_session")
+                signal_date = metadata.get("signal_date")
+                datetime.strptime(entry_session, "%Y-%m-%d")
+                datetime.strptime(signal_date, "%Y-%m-%d")
+                signal_close = float(metadata.get("signal_close"))
+            except (TypeError, ValueError):
+                fail("SWING 매수 체결 원장에 검증된 ATR/세션 메타데이터가 없습니다")
+            if (not math.isfinite(entry_atr) or entry_atr <= 0
+                    or not math.isfinite(signal_close) or signal_close <= 0
+                    or entry_session != created_at.strftime("%Y-%m-%d")
+                    or signal_date >= entry_session):
+                fail("SWING 매수 체결 원장의 ATR/가격/거래일 메타데이터가 일치하지 않습니다")
+            if last_exit_session == entry_session:
+                fail("SWING 동일 거래일 재진입 기록이 있습니다")
+            current = {
+                "position_id": order_id, "owned_qty": 1,
+                "verified_entry_price": amount / filled,
+                "entry_atr14": entry_atr, "entry_session": entry_session,
+                "entry_signal_date": signal_date,
+                "entry_signal_close": signal_close,
+            }
+        else:
+            if current is None or filled != 1 or number(order.get("requested_qty")) != 1:
+                fail("SWING 매도 체결이 확인된 포지션과 일치하지 않습니다")
+            last_exit_session = created_at.strftime("%Y-%m-%d")
+            last_closed_position_id = current["position_id"]
+            current = None
+    if any(order["side"] == "SELL" for order in pending) and current is None:
+        fail("미확정 SWING 매도와 검증된 포지션이 일치하지 않습니다")
+    pending_buys = [order for order in pending if order["side"] == "BUY"]
+    if len(pending_buys) > 1 or (pending_buys and current is not None):
+        fail("미확정 SWING 매수 주문이 복수로 존재합니다")
+    return current, last_exit_session, last_closed_position_id, pending, terminal_ids
+
+
+def rebuild_strategy_state():
+    """Derive ownership only from verified fills and keep trailing state per position."""
+    journal = read_journal()
+    entries = journal.get("orders", [])
+    if not isinstance(entries, list) or any(not isinstance(order, dict) for order in entries):
+        fail("주문 원장 형식 오류: orders는 객체 목록이어야 합니다")
     day = load_json(DAY_STATE_FILE, {"entry_time": None, "pyramided": False, "owned_qty": 0})
     baa = load_json(BAA_STATE_FILE, {"last_executed_date": None, "reinvest_pool": 0,
                                      "target_code": None, "owned_qty": 0})
+    swing_exists = SWING_STATE_FILE.exists()
+    swing = _validate_swing_state(load_json(SWING_STATE_FILE, default_swing_state()))
     day_qty, entry_time = 0, None
-    swing_qty, swing_entry_price, swing_entry_atr, swing_entry_session = 0, 0.0, None, None
-    swing_last_exit_session = None
     baa_net = {}
     realized = 0.0
     for order in entries:
@@ -697,7 +1019,7 @@ def rebuild_strategy_state():
             fail("주문 저널의 체결 수량이 잘못되었습니다")
         if not filled:
             continue
-        delta = filled if order["side"] == "BUY" else -filled
+        delta = filled if order.get("side") == "BUY" else -filled
         if order.get("strategy") == "DAY":
             day_qty += delta
             if day_qty < 0:
@@ -708,39 +1030,15 @@ def rebuild_strategy_state():
                 entry_time = None
             if delta < 0:
                 realized += number(order.get("confirmed_fill_amt")) - filled * float(order.get("sell_cost_basis") or 0)
-        elif order.get("strategy") == "SWING":
-            if order.get("code") != CODE_BULL:
-                fail("SWING 원장에 허용되지 않은 종목이 있습니다")
-            if delta > 0:
-                if swing_qty:
-                    fail("SWING 추가매수 기록이 있습니다. 수동 원장 확인 필요")
-                swing_qty = filled
-                if swing_qty > 1:
-                    fail("SWING 체결수량이 계좌 1주 상한을 초과합니다")
-                swing_entry_price = number(order.get("confirmed_fill_amt")) / filled
-                metadata = order.get("strategy_metadata") or {}
-                try:
-                    swing_entry_atr = float(metadata.get("entry_atr14"))
-                    datetime.strptime(metadata.get("entry_session", ""), "%Y-%m-%d")
-                except (TypeError, ValueError):
-                    fail("SWING 매수 체결 원장에 검증된 ATR/세션 메타데이터가 없습니다")
-                swing_entry_session = metadata.get("entry_session")
-                if (swing_entry_price <= 0 or not math.isfinite(swing_entry_atr)
-                        or swing_entry_atr <= 0):
-                    fail("SWING 매수 체결 원장에 검증된 ATR/세션 메타데이터가 없습니다")
-            else:
-                if filled > swing_qty:
-                    fail("SWING 매도 체결수량이 추적 보유수량을 초과합니다")
-                swing_qty -= filled
-                if swing_qty == 0:
-                    swing_entry_price, swing_entry_atr, swing_entry_session = 0.0, None, None
-                    swing_last_exit_session = order.get("created_at", "")[:10]
         elif order.get("strategy") == "BAA":
-            code = order["code"]
+            code = order.get("code")
+            if not isinstance(code, str) or not code:
+                fail("BAA 원장 종목이 누락되었습니다")
             baa_net[code] = baa_net.get(code, 0) + delta
             if baa_net[code] < 0:
                 fail(f"BAA {code} 추적 수량 음수")
-    positive = [(c, q) for c, q in baa_net.items() if q > 0]
+
+    positive = [(code, qty) for code, qty in baa_net.items() if qty > 0]
     if len(positive) > 1:
         fail("BAA 종목이 복수로 남아 있습니다. 자동 리밸런싱 중단")
     new_baa_code, new_baa_qty = positive[0] if positive else (None, 0)
@@ -752,31 +1050,128 @@ def rebuild_strategy_state():
         day["pyramided"] = False
     baa.update({"target_code": new_baa_code, "owned_qty": new_baa_qty,
                 "realized_daytrade_pnl": round(realized, 2)})
-    swing = load_json(SWING_STATE_FILE, default_swing_state())
-    if swing_qty:
-        initial_stop = swing_entry_price - 2 * float(swing_entry_atr)
+
+    position, last_exit_session, last_closed_id, pending, terminal_ids = \
+        _derive_swing_position(entries)
+    old_identity = (swing.get("position_id") or swing.get("entry_order_intent_id")
+                    if swing.get("schema_version") == 2
+                    else swing.get("entry_order_intent_id"))
+    old_qty = share_quantity(swing.get("owned_qty", 0))
+    old_last_exit = swing.get("last_exit_session")
+    if position:
+        same_position = old_identity == position["position_id"]
+        if old_qty and not same_position and old_identity != last_closed_id:
+            fail("SWING 상태 position_id와 검증된 저널 포지션이 일치하지 않습니다")
+        initial_stop = position["verified_entry_price"] - 2 * position["entry_atr14"]
+        preserve_trailing = False
+        if same_position:
+            for key, expected in (
+                ("verified_entry_price", position["verified_entry_price"]),
+                ("entry_atr14", position["entry_atr14"]),
+            ):
+                value = swing.get(key)
+                if value not in (None, 0, 0.0) and not math.isclose(
+                        float(value), expected, abs_tol=1.0):
+                    fail(f"SWING 동일 포지션의 {key}와 체결 저널이 일치하지 않습니다")
+            if swing.get("entry_session") not in (None, position["entry_session"]):
+                fail("SWING 동일 포지션의 entry_session이 체결 저널과 일치하지 않습니다")
+            stored_initial = swing.get("initial_stop")
+            if stored_initial is not None and not math.isclose(
+                    float(stored_initial), initial_stop, abs_tol=1.0):
+                fail("SWING 동일 포지션의 초기 스톱이 체결 저널과 일치하지 않습니다")
+            stored_active = swing.get("active_stop")
+            stored_high = swing.get("highest_completed_close")
+            if (old_qty and (stored_initial is None or stored_active is None)):
+                fail("SWING 동일 포지션의 활성 스톱 기록이 누락되었습니다")
+            if stored_active is None and stored_high is not None:
+                fail("SWING 고점 기록에 활성 스톱이 없습니다")
+            if stored_active is not None:
+                active = float(stored_active)
+                if active < initial_stop - 1:
+                    fail("SWING 활성 스톱이 초기 스톱보다 낮습니다")
+                if stored_high is None:
+                    if not math.isclose(active, initial_stop, abs_tol=1.0):
+                        fail("SWING 고점 기록 없는 활성 스톱이 초기 스톱과 다릅니다")
+                else:
+                    high = float(stored_high)
+                    trailing_limit = max(initial_stop, high - 3 * position["entry_atr14"])
+                    if active > trailing_limit + 1:
+                        fail("SWING 활성 스톱이 저장된 고점에서 산출한 값보다 높습니다")
+                preserve_trailing = True
+        if not same_position:
+            preserve_trailing = False
+        if swing.get("entry_order_intent_id") not in (None, position["position_id"]) and same_position:
+            fail("SWING entry_order_intent_id가 position_id와 다릅니다")
+        pending_sell = next((order for order in pending if order["side"] == "SELL"), None)
+        if (pending_sell and swing.get("exit_order_intent_id")
+                not in (None, pending_sell["id"])):
+            fail("미확정 SWING 매도 식별자가 상태와 일치하지 않습니다")
         swing.update({
-            "owned_qty": swing_qty,
-            "verified_entry_price": swing_entry_price,
-            "entry_atr14": swing_entry_atr,
+            "schema_version": 2, "strategy": "SWING",
+            "position_id": position["position_id"], "owned_qty": 1,
+            "verified_entry_price": position["verified_entry_price"],
+            "entry_atr14": position["entry_atr14"],
+            "entry_session": position["entry_session"],
+            "entry_order_intent_id": position["position_id"],
+            "entry_signal_date": position["entry_signal_date"],
+            "entry_signal_close": position["entry_signal_close"],
+            "signal_atr14": position["entry_atr14"],
+            "entry_opportunity_date": position["entry_session"],
+            "entry_opportunity_status": "FILLED",
+            "entry_skip_reason": None,
             "initial_stop": initial_stop,
-            "active_stop": max(
-                float(swing.get("active_stop") or initial_stop),
-                initial_stop,
-            ),
-            "entry_session": swing_entry_session,
+            "active_stop": (float(swing["active_stop"])
+                            if preserve_trailing and swing.get("active_stop") is not None
+                            else initial_stop),
+            "highest_completed_close": (float(swing["highest_completed_close"])
+                                        if preserve_trailing else None),
         })
+        if not same_position:
+            swing["exit_intent"] = None
+            swing["exit_order_intent_id"] = None
     else:
-        swing.update({
-            "owned_qty": 0, "verified_entry_price": 0.0, "entry_atr14": None,
-            "initial_stop": None, "active_stop": None, "entry_session": None,
-        })
-    if swing_last_exit_session:
-        swing["last_exit_session"] = swing_last_exit_session
+        pending_buy = next((order for order in pending if order["side"] == "BUY"), None)
+        pending_sell = next((order for order in pending if order["side"] == "SELL"), None)
+        if old_qty and last_closed_id is None:
+            fail("SWING 상태 보유가 검증된 체결 원장에 없습니다")
+        if pending_sell:
+            fail("미확정 SWING 매도 이후 포지션 원장을 확인할 수 없습니다")
+        if pending_buy:
+            if swing.get("entry_order_intent_id") not in (None, pending_buy["id"]):
+                fail("미확정 SWING 매수 식별자가 상태와 일치하지 않습니다")
+            swing["entry_order_intent_id"] = pending_buy["id"]
+            swing["entry_opportunity_status"] = "SUBMITTING"
+        elif swing.get("entry_opportunity_status") == "SUBMITTING":
+            intent_id = swing.get("entry_order_intent_id")
+            terminal = terminal_ids.get(intent_id)
+            # execute_order persists the journal intent before any broker POST.
+            # A staged state without a journal row is therefore safe to retry.
+            swing["entry_opportunity_status"] = "CLOSED" if terminal else "PENDING"
+            swing["entry_order_intent_id"] = None
+        if last_closed_id or old_qty or swing.get("position_id"):
+            closed_identity = last_closed_id or old_identity
+            if swing.get("entry_order_intent_id") == closed_identity:
+                swing["entry_order_intent_id"] = None
+            if swing.get("entry_opportunity_status") == "FILLED":
+                swing["entry_opportunity_status"] = "CLOSED"
+            swing.update({
+                "position_id": None, "owned_qty": 0, "verified_entry_price": 0.0,
+                "entry_atr14": None, "entry_session": None, "initial_stop": None,
+                "active_stop": None, "highest_completed_close": None,
+                "exit_intent": None, "exit_order_intent_id": None,
+            })
+    if last_exit_session and (not old_last_exit or last_exit_session > old_last_exit):
+        swing["last_exit_session"] = last_exit_session
+    if last_closed_id and swing.get("entry_order_intent_id") == last_closed_id and not position:
+        swing["entry_order_intent_id"] = None
+    if not swing_exists and not any(order.get("strategy") == "SWING" for order in entries):
+        # Keep the initial migration marker absent until the account snapshot is checked.
+        swing["migration_status"] = "PENDING"
+
     # Preserve legacy reinvest_pool only as a report field; never double-count it in NAV.
     save_json(DAY_STATE_FILE, day)
     save_json(BAA_STATE_FILE, baa)
-    if SWING_STATE_FILE.exists() or any(x.get("strategy") == "SWING" for x in entries):
+    if swing_exists or any(order.get("strategy") == "SWING" for order in entries):
         save_json(SWING_STATE_FILE, swing)
 
 
@@ -821,8 +1216,13 @@ def reconcile_orders(token: str):
         else:
             status = "PARTIAL" if filled > 0 else "ACCEPTED"
         # The journal is committed BEFORE derived state. Recovery is idempotent.
-        update_journal(entry["id"], status=status, confirmed_fill_qty=filled,
-                       confirmed_fill_amt=amount)
+        updates = {
+            "status": status, "confirmed_fill_qty": filled,
+            "confirmed_fill_amt": amount,
+        }
+        if status == "CANCELED":
+            updates["confirmed_cancel_qty"] = canceled
+        update_journal(entry["id"], **updates)
     rebuild_strategy_state()
 
 
@@ -1147,11 +1547,6 @@ def run_swing(token: str, holdings: dict, deposit: int, total_asset: int):
         except TradeSafetyError as exc:
             print(f">> [SWING 중단/BAA 유지] {exc}")
         return
-    if not owned and state.get("exit_intent"):
-        state["exit_intent"] = None
-        state["exit_order_intent_id"] = None
-        state["last_exit_session"] = state.get("last_exit_session") or today.isoformat()
-        save_json(SWING_STATE_FILE, state)
     if owned:
         actual_avg = float(holdings.get(CODE_BULL, {}).get("avg_price") or 0)
         verified_avg = float(state.get("verified_entry_price") or 0)
@@ -1302,6 +1697,7 @@ def run_swing(token: str, holdings: dict, deposit: int, total_asset: int):
         elif DRY_RUN:
             state["entry_opportunity_status"] = "DRY_RUN"
             state["entry_skip_reason"] = "dry-run: no order submitted"
+            state["entry_order_intent_id"] = None
             save_json(SWING_STATE_FILE, state)
         return
 

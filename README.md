@@ -77,10 +77,16 @@ delay; there is no fixed take-profit or holding-period liquidation.
 | Trailing stop | Highest eligible close − 3 × fixed entry ATR14 |
 | Trend exit | Close below the prior 10-session closing low |
 
-These are research parameters, not proven or optimized settings. Existing
-legacy DAY positions, orders, or ownership ambiguity block SWING migration;
-the bot does not adopt or liquidate them. Strategy performance and actual
-schedule reliability remain to be validated.
+These are research parameters, not proven or optimized settings. Migration
+validates every historical KODEX 200 DAY/BAA order lifecycle and permits
+completed legacy activity only when its strategy-specific net position is zero,
+no conflicting order remains unresolved, BAA has no KODEX 200 ownership, and
+the normal runtime's current account snapshot is flat. It then persists an
+explicit migration-complete marker without changing the journal. Any missing
+fill/cancellation evidence, malformed lifecycle, nonzero legacy position, or
+nonzero account holding blocks SWING; legacy holdings are never adopted or
+liquidated automatically. Strategy performance and actual schedule
+reliability remain to be validated.
 
 ## Aggressive BAA universe review (2026-10-19 KST)
 
