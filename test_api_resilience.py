@@ -152,10 +152,10 @@ class APIResilienceTests(unittest.TestCase):
         self.assertEqual(holdings['423160']['qty'], 6)
         self.assertEqual((cash, nav), (300159, 964989))
 
-    def _run_main(self, hhmm, *, day_order=False, baa_order=False):
+    def _run_main(self, hhmm, *, swing_order=False, baa_order=False):
         date_obj = bot.KST.localize(datetime(2026, 10, 15, int(hhmm[:2]), int(hhmm[3:])))
-        def run_intraday(*args, **kwargs):
-            if day_order:
+        def run_swing(*args, **kwargs):
+            if swing_order:
                 bot.ACCOUNT_ORDER_ATTEMPTS += 1
         def run_baa(*args, **kwargs):
             if baa_order:
@@ -171,7 +171,7 @@ class APIResilienceTests(unittest.TestCase):
              patch.object(bot, 'load_json', return_value={}), \
              patch.object(bot, 'save_json'), \
              patch.object(bot, 'adopt_verified_legacy_baa'), \
-             patch.object(bot, 'run_intraday', side_effect=run_intraday), \
+             patch.object(bot, 'run_swing', side_effect=run_swing), \
              patch.object(bot, 'run_baa', side_effect=run_baa), \
              patch.object(bot, 'handle_daily_closing_report'):
             bot.main()
@@ -187,8 +187,8 @@ class APIResilienceTests(unittest.TestCase):
         self.assertEqual(balance_count, 2)
         self.assertEqual(pending_count, 3)
 
-    def test_day_order_attempt_forces_balance_refresh(self):
-        balance_count, _ = self._run_main('10:30', day_order=True)
+    def test_swing_order_attempt_forces_balance_refresh(self):
+        balance_count, _ = self._run_main('10:30', swing_order=True)
         self.assertEqual(balance_count, 2)
 
     def test_baa_order_attempt_forces_post_order_balance_refresh(self):

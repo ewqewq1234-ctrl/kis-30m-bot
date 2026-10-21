@@ -3,17 +3,16 @@ name: KIS Bot Persistent State
 on:
   workflow_dispatch:
   schedule:
-    # UTC Sunday-Thursday 23:52 is Monday-Friday 08:52 KST (previous-day UTC).
+    # Previous-day UTC Sunday-Thursday = Monday-Friday 08:52 KST.
     - cron: '52 23 * * 0-4'
-    - cron: '3,13,21,32,38,49,54 0 * * 1-5'
-    - cron: '7,14,23,36,42,53,58 1 * * 1-5'
-    - cron: '7,21,28,33,46,52 2 * * 1-5'
-    - cron: '2,9,18,32,37,46,54 3 * * 1-5'
-    - cron: '4,18,27,32,42,53 4 * * 1-5'
-    # UTC 05:00-06:20 = KST 14:00-15:20. GitHub may delay cron runs.
-    - cron: '*/5 5 * * 1-5'
+    # Monday-Friday 09:00-13:50 KST, every 10 minutes.
+    - cron: '*/10 0-4 * * 1-5'
+    # Monday-Friday 14:00-14:50 KST, every 10 minutes.
+    - cron: '*/10 5 * * 1-5'
+    # Dedicated 14:53 KST settlement/report trigger.
     - cron: '53 5 * * 1-5'
-    - cron: '0,5,10,15,20 6 * * 1-5'
+    # Monday-Friday 15:00, 15:10, and 15:20 KST.
+    - cron: '0,10,20 6 * * 1-5'
 
 permissions:
   contents: write
@@ -73,11 +72,11 @@ jobs:
 
       - run: pip install -r requirements.txt
       - run: python -m py_compile bot_once.py
-      - run: python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py
+      - run: python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py test_swing_strategy.py
         env:
           GITHUB_STATE_MODE: 'off'
 
       - name: Run bot (fail closed)
         env:
-          RUN_MIDDAY_REPORT: ${{ github.event_name == 'schedule' && (github.event.schedule == '*/5 5 * * 1-5' || github.event.schedule == '53 5 * * 1-5' || github.event.schedule == '0,5,10,15,20 6 * * 1-5') && 'Y' || 'N' }}
+          RUN_MIDDAY_REPORT: ${{ github.event_name == 'schedule' && (github.event.schedule == '*/10 5 * * 1-5' || github.event.schedule == '53 5 * * 1-5' || github.event.schedule == '0,10,20 6 * * 1-5') && 'Y' || 'N' }}
         run: python bot_once.py

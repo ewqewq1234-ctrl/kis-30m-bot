@@ -6,14 +6,16 @@
   configured for `KIS_ENV=real`, `DRY_RUN=N`, `ENABLE_LIVE_ORDERS=YES`, and
   `FORCE_BAA=N`; the execution-time guard blocks live orders before
   2026-10-20 in Korea Standard Time.
-- KODEX 200 (`069500`) is reserved for short-term trading. New buys are limited
-  to one share, and the broker balance is checked again immediately before a
-  buy intent is written. A balance/ledger mismatch, unresolved order, or
-  uncertain API result halts new orders.
+- KODEX 200 (`069500`) uses the separately identified SWING strategy; the
+  former DAY intraday entry, fixed profit target, and mandatory intraday
+  behavior are disabled. New entries are limited to one share and a 30% NAV
+  former-DAY first-entry sleeve cap (30% sleeve × 50% initial weight × 96%
+  cash buffer, at most 14.4% of NAV), further bounded by available cash and the
+  broker's buyable quantity. BAA's configured 80% allocation is unchanged.
 - The four BAA Canary assets are `360750` TIGER 미국S&P500, `251350` KODEX
   MSCI선진국, `195980` PLUS 신흥국MSCI(합성 H), and `437080` KODEX
-  미국종합채권ESG액티브(H). KODEX 200 (`069500`) remains DAY-only and is
-  excluded from both Canary scoring and aggressive BAA ranking.
+  미국종합채권ESG액티브(H). KODEX 200 (`069500`) remains excluded from both
+  Canary scoring and aggressive BAA ranking.
 - `251350` follows a developed-markets index that includes US stocks, so it is
   not an exact equivalent of VEA (developed markets excluding the US).
   `437080` is an ESG-screened US total-bond product and may differ in holdings
@@ -37,10 +39,48 @@
   the existing 50% reduction in a downtrend. Actual post-sale cash is checked
   before a follow-up purchase.
 - Weekday GitHub Actions schedules use UTC cron expressions. The afternoon
-  schedule covers 14:00–15:20 KST in five-minute increments and retains the
-  separate 14:53 settlement event. A later run can recover a missed settlement.
-  GitHub Actions does not guarantee exact execution times; scheduled checks
-  cannot provide real-time stop-loss monitoring.
+  recurring schedules use 10-minute intervals and retain the dedicated
+  14:53 KST settlement/report event. They expand to 41 unique trigger times
+  per KST weekday, including 08:52 and ending at 15:20. A later run can recover
+  a missed settlement. Cron simplification does not guarantee punctual runs;
+  scheduled checks cannot provide real-time stop-loss monitoring.
+
+| UTC cron | KST trigger |
+| --- | --- |
+| `52 23 * * 0-4` | Monday-Friday 08:52 (previous UTC day) |
+| `*/10 0-4 * * 1-5` | Monday-Friday 09:00-13:50, every 10 minutes |
+| `*/10 5 * * 1-5` | Monday-Friday 14:00-14:50, every 10 minutes |
+| `53 5 * * 1-5` | Monday-Friday 14:53 settlement/report |
+| `0,10,20 6 * * 1-5` | Monday-Friday 15:00, 15:10, 15:20 |
+
+## KODEX 200 SWING (initial, unvalidated settings)
+
+Signals use 100 or more validated, unadjusted KIS daily OHLCV bars. The latest
+bar must be the prior exchange session confirmed by KIS's holiday calendar.
+Entry on the next exchange session requires a close above the preceding 20
+closes and SMA20 above SMA60. Entry is permitted only 09:10–14:30 KST, at no
+more than signal close + ATR14, with one share maximum. The deterministic
+100-session initialization window seeds ATR from the arithmetic mean of its
+first 14 valid true ranges, then applies Wilder recursion. Initial stop is
+verified average fill minus 2 × frozen entry ATR.
+The trailing stop is the greater of its previous value, the initial stop, and
+the highest eligible completed close since entry minus 3 × frozen entry ATR.
+A close below the preceding 10 closes persists a trend-exit intent. Exits are
+application-monitored and may execute below a stop after a gap or scheduling
+delay; there is no fixed take-profit or holding-period liquidation.
+
+| Rule | Initial setting |
+| --- | --- |
+| Entry breakout / trend | Prior 20-session closing high / SMA20 > SMA60 |
+| Entry volatility cap | Signal close + ATR14 |
+| Initial stop | Verified fill − 2 × entry ATR14 |
+| Trailing stop | Highest eligible close − 3 × fixed entry ATR14 |
+| Trend exit | Close below the prior 10-session closing low |
+
+These are research parameters, not proven or optimized settings. Existing
+legacy DAY positions, orders, or ownership ambiguity block SWING migration;
+the bot does not adopt or liquidate them. Strategy performance and actual
+schedule reliability remain to be validated.
 
 ## Aggressive BAA universe review (2026-10-19 KST)
 
@@ -84,7 +124,7 @@ Public chart data sources:
 Run the offline safety suite with:
 
 ```sh
-python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py
+python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py test_swing_strategy.py
 ```
 
 The Ubuntu regression workflow runs the proposed suite with outbound socket
