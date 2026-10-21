@@ -2,7 +2,7 @@
 import re
 import unittest
 from contextlib import ExitStack
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,8 +26,11 @@ class OneShareTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def attempt(self, actual=0, owned=0, qty=1, strategy="DAY", side="02", baa=False):
-        self.write("day_state.json", {"owned_qty": owned})
+    def attempt(self, actual=0, owned=0, qty=1, strategy="SWING", side="02", baa=False):
+        self.write("day_state.json", {"owned_qty": 0})
+        swing = bot.default_swing_state()
+        swing["owned_qty"] = owned
+        self.write("swing_state.json", swing)
         self.write(
             "baa_state.json",
             {"target_code": "069500" if baa else None, "owned_qty": 1 if baa else 0},
@@ -57,13 +60,13 @@ class OneShareTests(unittest.TestCase):
                     self.attempt(actual, owned, qty)
         self.assertEqual(self.attempt(), (False, 0))
 
-    def test_baa_conflicts_and_only_day_strategy_may_buy_ticker(self):
-        for kwargs in [{"strategy": "BAA"}, {"baa": True}]:
+    def test_baa_and_legacy_day_conflicts_block_buys(self):
+        for kwargs in [{"strategy": "BAA"}, {"strategy": "DAY"}, {"baa": True}]:
             with self.subTest(kwargs=kwargs), self.assertRaises(bot.TradeSafetyError):
                 self.attempt(**kwargs)
 
     def test_sell_is_not_blocked_by_one_share_buy_cap(self):
-        self.assertEqual(self.attempt(actual=2, owned=2, qty=2, side="01"), (False, 0))
+        self.assertEqual(self.attempt(actual=1, owned=1, qty=1, side="01"), (False, 0))
 
     def test_fresh_account_verification_failure_blocks_order(self):
         with patch.object(bot, "order_window", return_value=True), \
@@ -75,7 +78,7 @@ class OneShareTests(unittest.TestCase):
              patch.object(bot, "get_account_balance", side_effect=bot.TradeSafetyError("unavailable")), \
              patch.object(bot, "api_request") as request:
             with self.assertRaises(bot.TradeSafetyError):
-                bot.execute_order("fake", "069500", 1, strategy="DAY")
+                bot.execute_order("fake", "069500", 1, strategy="SWING")
         request.assert_not_called()
 
     def test_live_orders_are_blocked_before_kst_start_date(self):
@@ -96,14 +99,6 @@ class OneShareTests(unittest.TestCase):
             with self.assertRaises(bot.TradeSafetyError):
                 bot.execute_order("fake", "069500", 1, strategy="DAY")
         request.assert_not_called()
-
-    def test_large_day_budget_still_requests_one_share(self):
-        with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 14, 0))), \
-             patch.object(bot, "get_current_price", return_value=1000), \
-             patch.object(bot, "check_daytrade_signal", return_value=True), \
-             patch.object(bot, "execute_order") as order:
-            bot.run_intraday("fake", {}, 10_000_000, 10_000_000)
-        self.assertEqual(order.call_args.args[2], 1)
 
     def test_baa_aggressive_ranking_excludes_short_term_ticker(self):
         requested = []
@@ -381,17 +376,59 @@ class OneShareTests(unittest.TestCase):
         telegram.assert_called_once()
         self.assertTrue(telegram.call_args.kwargs["is_alert"])
 
-    def test_five_minute_schedule_is_unique_and_correctly_converts_to_kst(self):
+    def test_ten_minute_schedule_has_41_unique_weekday_triggers(self):
         workflow = Path(".github/workflows/trade.yml").read_text(encoding="utf-8")
-        slots = []
-        for minute, hour in re.findall(r"cron: '([^ ]+) ([^ ]+) \* \* 1-5'", workflow):
-            minutes = range(0, 60, 5) if minute == "*/5" else map(int, minute.split(","))
-            slots.extend(int(hour) * 60 + value for value in minutes)
-        self.assertEqual(len(slots), 51)
-        self.assertEqual(len(slots), len(set(slots)))
-        kst_slots = {((minute // 60 + 9) % 24) * 60 + minute % 60 for minute in slots}
-        self.assertEqual(kst_slots & set(range(14 * 60, 15 * 60 + 21)),
-                         set(range(14 * 60, 15 * 60 + 21, 5)) | {14 * 60 + 53})
+        expected = {
+            "52 23 * * 0-4", "*/10 0-4 * * 1-5", "*/10 5 * * 1-5",
+            "53 5 * * 1-5", "0,10,20 6 * * 1-5",
+        }
+        actual = set(re.findall(r"cron: '([^']+)'", workflow))
+        self.assertEqual(actual, expected)
+        start = datetime(2026, 10, 18)  # Sunday in UTC.
+        utc_runs = []
+        for offset in range(7):
+            day = start + timedelta(days=offset)
+            cron_day = (day.weekday() + 1) % 7
+            for expression in expected:
+                minute_field, hour_field, _, _, day_field = expression.split()
+                cron_days = set(range(0, 5)) if day_field == "0-4" else set(range(1, 6))
+                if cron_day not in cron_days:
+                    continue
+                hours = set(range(0, 5)) if hour_field == "0-4" else {int(hour_field)}
+                for hour in hours:
+                    if minute_field == "*/10":
+                        minutes = range(0, 60, 10)
+                    else:
+                        minutes = [int(value) for value in minute_field.split(",")]
+                    utc_runs.extend(day.replace(hour=hour, minute=minute) for minute in minutes)
+        kst_runs = [run.replace(tzinfo=timezone.utc).astimezone(bot.KST) for run in utc_runs]
+        per_day = {}
+        for run in kst_runs:
+            if run.weekday() < 5:
+                per_day.setdefault(run.date(), []).append(run.strftime("%H:%M"))
+            else:
+                self.fail(f"Unexpected KST weekend trigger: {run}")
+        weekday_slots = [sorted(times) for day, times in per_day.items() if day.weekday() < 5]
+        self.assertEqual(len(weekday_slots), 5)
+        for times in weekday_slots:
+            self.assertEqual(len(times), 41)
+            self.assertEqual(len(times), len(set(times)))
+            self.assertEqual(times[0], "08:52")
+            self.assertEqual(times[-1], "15:20")
+            expected_local = {"08:52", "14:53", "15:00", "15:10", "15:20"}
+            expected_local.update(
+                f"{hour:02d}:{minute:02d}"
+                for hour in range(9, 14) for minute in range(0, 60, 10)
+            )
+            expected_local.update(f"14:{minute:02d}" for minute in range(0, 60, 10))
+            self.assertEqual(set(times), expected_local)
+        expression = re.search(r"RUN_MIDDAY_REPORT: (.+)", workflow).group(1)
+        report_crons = set(re.findall(r"github\.event\.schedule == '([^']+)'", expression))
+        self.assertEqual(report_crons, {
+            "*/10 5 * * 1-5", "53 5 * * 1-5", "0,10,20 6 * * 1-5",
+        })
+        self.assertIn("github.event_name == 'schedule' &&", expression)
+        self.assertIn("workflow_dispatch:", workflow)
 
     def test_broker_quantity_must_be_explicit_and_nonnegative_integer(self):
         for value in [None, "", "unknown", "-1", "1.5", "nan", True, "999999999999999999999999999999999999"]:

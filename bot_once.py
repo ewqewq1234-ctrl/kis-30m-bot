@@ -34,6 +34,7 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_FILE = BASE_DIR / "token_cache.json"
 SECURE_TOKEN_FILE = BASE_DIR / "token_cache.secure"
 DAY_STATE_FILE = BASE_DIR / "day_state.json"
+SWING_STATE_FILE = BASE_DIR / "swing_state.json"
 BAA_STATE_FILE = BASE_DIR / "baa_state.json"
 TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
 HOLIDAY_CACHE_FILE = BASE_DIR / "holiday_cache.json"
@@ -62,13 +63,8 @@ MARKET_START = "09:00"
 MARKET_END = "15:20"  # conservative KRX ordinary-order cut-off; check broker-specific schedule
 
 CODE_BULL = "069500"
-PROFIT_TARGET = 0.012
-STOP_LOSS = -0.009
-PYRAMID_TRIGGER = 0.005       # 기존 코드에서 미구현: 자동 활성화하지 않음
-TIME_STOP_MINUTES = 90       # 기존 코드에서 미구현: 자동 활성화하지 않음
-DAY_BUDGET_RATIO = 0.30
-WEIGHT_BASE = 0.50
-WEIGHT_PYRAMID = 0.50
+SWING_BUDGET_RATIO = 0.30
+SWING_INITIAL_WEIGHT = 0.50
 BAA_TARGET_RATIO = 0.80
 
 CANARY_UNIVERSE = {
@@ -163,7 +159,7 @@ def durable_checkpoint(filepath):
     if os.getenv("GITHUB_STATE_MODE") != "git":
         return
     filepath = Path(filepath).resolve()
-    if filepath.name not in {"trade_history.json", "day_state.json", "baa_state.json", "risk_state.json", "holiday_cache.json", "schedule_state.json", "token_cache.secure"}:
+    if filepath.name not in {"trade_history.json", "day_state.json", "swing_state.json", "baa_state.json", "risk_state.json", "holiday_cache.json", "schedule_state.json", "token_cache.secure"}:
         return
     if filepath.parent != BASE_DIR:
         raise TradeSafetyError("상태 파일이 지정된 영구 저장소 밖에 있습니다")
@@ -377,24 +373,43 @@ def get_access_token(force=False):
     return token
 
 
-def is_market_open_today(token: str) -> bool:
-    today = now_kst().strftime("%Y%m%d")
-    if now_kst().weekday() >= 5:
-        return False
+def is_market_open_date(token: str, target_date) -> bool:
+    date_text = target_date.strftime("%Y%m%d")
     cache = load_json(HOLIDAY_CACHE_FILE, {})
-    if cache.get("date") == today and cache.get("is_open") in (True, False):
+    if target_date == now_kst().date() and cache.get("date") == date_text and cache.get("is_open") in (True, False):
         return cache["is_open"]
     result, _ = api_request("GET", "/uapi/domestic-stock/v1/quotations/chk-holiday", token,
-                            tr_id="CTCA0903R", params={"BASS_DT": today, "CTX_AREA_FK": "", "CTX_AREA_NK": ""})
+                            tr_id="CTCA0903R", params={"BASS_DT": date_text, "CTX_AREA_FK": "", "CTX_AREA_NK": ""})
     entries = result.get("output") or []
     if isinstance(entries, dict):
         entries = [entries]
     for item in entries:
-        if str(item.get("bass_dt")) == today and item.get("opnd_yn") in ("Y", "N"):
+        if str(item.get("bass_dt")) == date_text and item.get("opnd_yn") in ("Y", "N"):
             is_open = item["opnd_yn"] == "Y"
-            save_json(HOLIDAY_CACHE_FILE, {"date": today, "is_open": is_open})
+            if target_date == now_kst().date():
+                save_json(HOLIDAY_CACHE_FILE, {"date": date_text, "is_open": is_open})
             return is_open
-    fail("오늘 휴장 여부를 검증하지 못했습니다. 평일 추정 주문 금지")
+    fail(f"{date_text} 휴장 여부를 검증하지 못했습니다. 평일 추정 주문 금지")
+
+
+def is_market_open_today(token: str) -> bool:
+    return is_market_open_date(token, now_kst().date())
+
+
+def previous_exchange_session(token: str, session_date):
+    for offset in range(1, 16):
+        candidate = session_date - timedelta(days=offset)
+        if is_market_open_date(token, candidate):
+            return candidate
+    fail("이전 거래일을 KIS 거래일 조회로 확인하지 못했습니다")
+
+
+def next_exchange_session(token: str, session_date):
+    for offset in range(1, 16):
+        candidate = session_date + timedelta(days=offset)
+        if is_market_open_date(token, candidate):
+            return candidate
+    fail("다음 거래일을 KIS 거래일 조회로 확인하지 못했습니다")
 
 
 def order_window() -> bool:
@@ -502,11 +517,11 @@ def get_order_records(token: str, *, day=None):
     fail("체결조회 페이지 제한 초과")
 
 
-def get_buyable_qty(token: str, code: str, price: int) -> int:
+def get_buyable_qty(token: str, code: str, price: int, ord_dvsn="01") -> int:
     result, _ = api_request("GET", "/uapi/domestic-stock/v1/trading/inquire-psbl-order", token,
                             tr_id="TTTC8908R" if KIS_ENV == "real" else "VTTC8908R",
                             params={"CANO": KIS_CANO, "ACNT_PRDT_CD": KIS_ACNT_PRDT_CD,
-                                    "PDNO": code, "ORD_UNPR": str(price), "ORD_DVSN": "01",
+                                    "PDNO": code, "ORD_UNPR": str(price), "ORD_DVSN": ord_dvsn,
                                     "CMA_EVLU_AMT_ICLD_YN": "N", "OVRS_ICLD_YN": "N"})
     output = result.get("output") or {}
     if not isinstance(output, dict) or "nrcvb_buy_qty" not in output:
@@ -616,17 +631,385 @@ def adopt_verified_legacy_baa(token: str, holdings: dict):
     return True
 
 
-def rebuild_strategy_state():
-    """Rebuild position ownership from the journal (source of truth).
+def default_swing_state():
+    return {
+        "schema_version": 2, "strategy": "SWING", "migration_status": "PENDING",
+        "migration_completed_at": None, "position_id": None,
+        "signal_date": None, "signal_status": None, "entry_signal_date": None,
+        "entry_signal_close": None, "signal_atr14": None, "entry_atr14": None,
+        "entry_opportunity_date": None,
+        "entry_opportunity_status": None, "entry_skip_reason": None,
+        "entry_order_intent_id": None, "owned_qty": 0, "verified_entry_price": 0.0,
+        "entry_session": None, "initial_stop": None, "active_stop": None,
+        "highest_completed_close": None, "last_processed_bar_date": None,
+        "exit_intent": None, "exit_order_intent_id": None, "last_exit_session": None,
+        "data_status": "NOT_CHECKED", "data_error": None, "data_as_of_date": None,
+    }
 
-    Thus, a crash between saving a fill and saving strategy state does not
-    double-apply it on the next run. Any pre-existing legacy position that was
-    not recorded in this journal is intentionally NOT adopted.
-    """
+
+def _strict_journal_int(value, field, *, default=None):
+    if value is None and default is not None:
+        return default
+    if isinstance(value, bool):
+        fail(f"주문 원장 {field} 형식 오류")
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, str) and value.isascii() and value.isdigit():
+        result = int(value)
+    else:
+        fail(f"주문 원장 {field} 형식 오류")
+    if result < 0:
+        fail(f"주문 원장 {field} 음수 오류")
+    return result
+
+
+def _journal_order_time(order):
+    value = order.get("created_at")
+    if not isinstance(value, str):
+        fail("주문 원장 생성 시각 누락/형식 오류")
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        fail("주문 원장 생성 시각 누락/형식 오류")
+
+
+def _terminal_fill_evidence(order):
+    """Validate a terminal order's broker-confirmed fill and residual quantity."""
+    status = order.get("status")
+    if status not in {"FILLED", "CANCELED", "REJECTED"}:
+        fail(f"미확정 주문은 SWING 마이그레이션/원장 재구성에 사용할 수 없습니다: {status}")
+    requested = _strict_journal_int(order.get("requested_qty"), "requested_qty")
+    if requested <= 0:
+        fail("주문 원장 요청 수량 오류")
+    filled = _strict_journal_int(order.get("confirmed_fill_qty"), "confirmed_fill_qty")
+    amount_value = order.get("confirmed_fill_amt")
+    if isinstance(amount_value, bool):
+        fail("주문 원장 confirmed_fill_amt 형식 오류")
+    try:
+        amount = float(amount_value)
+    except (TypeError, ValueError):
+        fail("주문 원장 confirmed_fill_amt 누락/형식 오류")
+    if not math.isfinite(amount) or amount < 0:
+        fail("주문 원장 confirmed_fill_amt 범위 오류")
+    if filled > requested or (filled and amount <= 0) or (not filled and amount != 0):
+        fail("주문 원장 체결 수량/금액이 일치하지 않습니다")
+    if status == "FILLED" and filled != requested:
+        fail("FILLED 주문의 확정 체결 수량이 요청 수량과 다릅니다")
+    if status in {"CANCELED", "REJECTED"} and filled == requested:
+        fail(f"{status} 주문이 요청 수량 전체 체결로 기록되어 있습니다")
+    if status == "CANCELED":
+        canceled_value = order.get("confirmed_cancel_qty")
+        if canceled_value is not None:
+            canceled = _strict_journal_int(canceled_value, "confirmed_cancel_qty")
+            if filled + canceled != requested:
+                fail("CANCELED 주문의 체결/취소 수량이 요청 수량과 다릅니다")
+        # Older journal entries store only terminal CANCELED; reconcile wrote
+        # that status only after confirmed fills plus broker cancellations closed it.
+    if status == "REJECTED" and filled < requested:
+        rejected_value = order.get("confirmed_rejected_qty")
+        if filled == 0 and rejected_value is None:
+            rejected = requested
+        elif rejected_value is None:
+            fail("일부 체결된 REJECTED 주문의 잔여 거절 수량 증거가 없습니다")
+        else:
+            rejected = _strict_journal_int(rejected_value, "confirmed_rejected_qty")
+        if filled + rejected != requested:
+            fail("REJECTED 주문의 체결/거절 수량이 요청 수량과 다릅니다")
+    return requested, filled, amount
+
+
+def _validate_swing_state(state):
+    version = state.get("schema_version") if isinstance(state, dict) else None
+    if (not isinstance(state, dict) or state.get("strategy") != "SWING"
+            or type(version) is not int or version not in (1, 2)):
+        fail("SWING 상태 버전/전략 식별 오류")
+    owned = _strict_journal_int(state.get("owned_qty", 0), "SWING owned_qty")
+    if owned > 1:
+        fail("SWING 상태 보유량이 1주 상한을 초과합니다")
+    if state.get("schema_version") == 2:
+        position_id = state.get("position_id")
+        if position_id is not None and (not isinstance(position_id, str) or not position_id):
+            fail("SWING 상태 position_id 형식 오류")
+        completed_at = state.get("migration_completed_at")
+        if completed_at is not None:
+            if not isinstance(completed_at, str):
+                fail("SWING migration_completed_at 형식 오류")
+            try:
+                datetime.strptime(completed_at, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                fail("SWING migration_completed_at 형식 오류")
+    for key in ("signal_date", "entry_signal_date", "entry_opportunity_date",
+                "last_processed_bar_date", "last_exit_session", "entry_session"):
+        value = state.get(key)
+        if value is not None:
+            if not isinstance(value, str):
+                fail(f"SWING 상태 {key} 형식 오류")
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError:
+                fail(f"SWING 상태 {key} 형식 오류")
+    for key in ("entry_signal_close", "signal_atr14", "entry_atr14",
+                "verified_entry_price", "initial_stop", "active_stop",
+                "highest_completed_close"):
+        value = state.get(key)
+        if value is not None:
+            if isinstance(value, bool):
+                fail(f"SWING 상태 {key} 형식 오류")
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                fail(f"SWING 상태 {key} 형식 오류")
+            if not math.isfinite(parsed):
+                fail(f"SWING 상태 {key} 범위 오류")
+            if key in ("initial_stop", "active_stop"):
+                continue
+            if key == "verified_entry_price":
+                if parsed < 0:
+                    fail(f"SWING 상태 {key} 범위 오류")
+            elif parsed <= 0:
+                fail(f"SWING 상태 {key} 범위 오류")
+    if state.get("exit_intent") not in (None, "TREND", "PROTECTIVE_STOP"):
+        fail("SWING 상태 exit_intent 형식 오류")
+    for key in ("entry_order_intent_id", "exit_order_intent_id"):
+        value = state.get(key)
+        if value is not None and (not isinstance(value, str) or not value):
+            fail(f"SWING 상태 {key} 형식 오류")
+    if owned:
+        identity = (state.get("position_id") if state.get("schema_version") == 2
+                    else state.get("entry_order_intent_id"))
+        if not identity or state.get("entry_order_intent_id") not in (None, identity):
+            fail("SWING 보유 상태의 position identity가 없습니다")
+        for key in ("verified_entry_price", "entry_atr14", "initial_stop", "active_stop"):
+            if state.get(key) is None:
+                fail(f"SWING 보유 상태의 {key}가 없습니다")
+        if float(state["verified_entry_price"]) <= 0 or float(state["entry_atr14"]) <= 0:
+            fail("SWING 보유 상태의 진입가/ATR이 비정상입니다")
+        if state.get("entry_session") is None:
+            fail("SWING 보유 상태의 entry_session이 없습니다")
+    elif state.get("exit_intent") or state.get("exit_order_intent_id"):
+        fail("SWING 보유가 없는 상태에 청산 의도가 남아 있습니다")
+    if state.get("migration_status") not in (None, "READY", "PENDING", "COMPLETE"):
+        fail("SWING 마이그레이션 상태 형식 오류")
+    if state.get("migration_status") == "COMPLETE" and not state.get("migration_completed_at"):
+        fail("SWING 마이그레이션 완료 시각 누락")
+    return state
+
+
+def _migration_legacy_positions(entries, day, baa):
+    if not isinstance(entries, list) or any(not isinstance(order, dict) for order in entries):
+        fail("069500 원장 기록이 모호합니다. SWING 자동화를 중단합니다")
+    ids = [order.get("id") for order in entries]
+    if any(not isinstance(value, str) or not value for value in ids) or len(ids) != len(set(ids)):
+        fail("주문 원장 식별자가 누락되었거나 중복되었습니다")
+
+    relevant = []
+    for index, order in enumerate(entries):
+        strategy, code = order.get("strategy"), order.get("code")
+        if strategy == "SWING" and code != CODE_BULL:
+            fail("SWING 원장에 허용되지 않은 종목이 있습니다")
+        if code == CODE_BULL:
+            if strategy not in {"DAY", "BAA", "SWING"}:
+                fail("069500 과거 주문의 전략/종목 소유권이 모호합니다")
+            relevant.append((index, order))
+
+    net_by_strategy = {"DAY": 0, "BAA": 0, "SWING": 0}
+    for _, order in sorted(relevant, key=lambda item: (_journal_order_time(item[1]), item[0])):
+        strategy = order["strategy"]
+        if order.get("side") not in {"BUY", "SELL"}:
+            fail("069500 과거 주문 방향이 누락되었거나 지원되지 않습니다")
+        _, filled, _ = _terminal_fill_evidence(order)
+        delta = filled if order["side"] == "BUY" else -filled
+        net_by_strategy[strategy] += delta
+        if net_by_strategy[strategy] < 0:
+            fail(f"069500 {strategy} 매도 체결이 확인된 보유량을 초과합니다")
+    if net_by_strategy["DAY"] != 0:
+        fail("과거 DAY 체결의 순보유량이 0이 아닙니다. 자동 마이그레이션 차단")
+    if net_by_strategy["BAA"] != 0:
+        fail("과거 BAA 069500 체결의 소유권이 해소되지 않았습니다")
+
+    owned = _strict_journal_int(day.get("owned_qty", 0), "DAY owned_qty")
+    if owned or day.get("entry_time") not in (None, "") or day.get("pyramided") not in (None, False):
+        fail("과거 DAY 상태 파일에 미해결 보유/진입 정보가 있습니다")
+    if baa.get("target_code") == CODE_BULL:
+        fail("BAA 상태가 069500 소유권 충돌을 나타냅니다")
+    _strict_journal_int(baa.get("owned_qty", 0), "BAA owned_qty")
+    return net_by_strategy
+
+
+def migrate_swing_state_if_safe(holdings: dict):
+    exists = SWING_STATE_FILE.exists()
+    if exists:
+        state = _validate_swing_state(load_json(SWING_STATE_FILE, {}))
+    else:
+        state = default_swing_state()
+    day = load_json(DAY_STATE_FILE, {})
+    baa = load_json(BAA_STATE_FILE, {})
     entries = read_journal().get("orders", [])
+    strategy_net = _migration_legacy_positions(entries, day, baa)
+    journal_position, _, _, pending_swing, _ = _derive_swing_position(entries)
+    if pending_swing:
+        fail("미확정 SWING 주문이 있어 마이그레이션/상태 검증을 중단합니다")
+    actual_qty = share_quantity(holdings.get(CODE_BULL, {}).get("qty", 0))
+    state_qty = share_quantity(state.get("owned_qty", 0))
+    if state.get("migration_status") == "COMPLETE":
+        if state.get("schema_version") != 2 or not state.get("migration_completed_at"):
+            fail("SWING 마이그레이션 완료 표식/스키마가 유효하지 않습니다")
+        if actual_qty != state_qty or strategy_net["SWING"] != state_qty:
+            fail("069500 SWING 상태와 계좌 잔고가 일치하지 않습니다")
+        if state_qty:
+            expected_stop = float(state["verified_entry_price"]) - 2 * float(state["entry_atr14"])
+            if (journal_position is None
+                    or state.get("position_id") != journal_position["position_id"]
+                    or state.get("entry_order_intent_id") != state.get("position_id")
+                    or state.get("entry_session") is None
+                    or state.get("initial_stop") is None
+                    or not math.isclose(float(state["initial_stop"]), expected_stop, abs_tol=1.0)
+                    or state.get("active_stop") is None):
+                fail("완료된 SWING 마이그레이션의 포지션 상태가 불완전합니다")
+            active_stop = float(state["active_stop"])
+            high = state.get("highest_completed_close")
+            if active_stop < expected_stop - 1:
+                fail("완료된 SWING 포지션의 활성 스톱이 초기 스톱보다 낮습니다")
+            if high is None and not math.isclose(active_stop, expected_stop, abs_tol=1.0):
+                fail("완료된 SWING 포지션의 고점/활성 스톱 상태가 일치하지 않습니다")
+            if high is not None and active_stop > max(
+                    expected_stop, float(high) - 3 * float(state["entry_atr14"])) + 1:
+                fail("완료된 SWING 포지션의 활성 스톱이 고점 기반 값보다 높습니다")
+        elif (journal_position is not None or float(state.get("verified_entry_price") or 0) != 0
+              or any(state.get(key) is not None for key in (
+                "position_id", "entry_session", "entry_atr14", "initial_stop",
+                "active_stop", "highest_completed_close", "exit_intent",
+                "exit_order_intent_id", "entry_order_intent_id"))):
+            fail("보유가 없는 SWING 상태에 포지션 전용 정보가 남아 있습니다")
+        return state
+    if actual_qty != 0 or state_qty != 0 or strategy_net["SWING"] != 0 or journal_position is not None:
+        fail("SWING 마이그레이션 전 실제 계좌 잔고와 추적 보유량이 모두 0이어야 합니다")
+    if (state.get("entry_opportunity_status") == "SUBMITTING"
+            or state.get("entry_order_intent_id") or state.get("exit_intent")
+            or state.get("exit_order_intent_id")):
+        fail("미확정 SWING 주문 상태가 있어 마이그레이션을 중단합니다")
+    if exists and state.get("schema_version") == 2 and state.get("migration_status") not in ("PENDING", "READY"):
+        fail("SWING 마이그레이션 상태 형식 오류")
+    state.update({
+        "schema_version": 2,
+        "strategy": "SWING",
+        "position_id": None, "owned_qty": 0, "verified_entry_price": 0.0,
+        "entry_atr14": None, "entry_session": None, "initial_stop": None,
+        "active_stop": None, "highest_completed_close": None,
+        "entry_order_intent_id": None, "exit_intent": None,
+        "exit_order_intent_id": None,
+        "migration_status": "COMPLETE",
+        "migration_completed_at": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    save_json(SWING_STATE_FILE, state)
+    return state
+
+
+def _derive_swing_position(entries):
+    orders = []
+    seen_ids = set()
+    for index, order in enumerate(entries):
+        if order.get("strategy") != "SWING":
+            continue
+        if order.get("code") != CODE_BULL or order.get("side") not in {"BUY", "SELL"}:
+            fail("SWING 원장에 지원되지 않는 종목/방향이 있습니다")
+        order_id = order.get("id")
+        if not isinstance(order_id, str) or not order_id or order_id in seen_ids:
+            fail("SWING 원장 주문 식별자가 누락되었습니다")
+        seen_ids.add(order_id)
+        created_at = _journal_order_time(order)
+        status = order.get("status")
+        if status in {"INTENT", "UNCERTAIN", "ACCEPTED", "PARTIAL", "UNKNOWN"}:
+            requested = _strict_journal_int(order.get("requested_qty"), "requested_qty")
+            filled = _strict_journal_int(
+                order.get("confirmed_fill_qty"), "confirmed_fill_qty", default=0
+            )
+            if requested != 1 or filled:
+                fail("미확정 SWING 주문의 수량/체결은 포지션 전이에 사용할 수 없습니다")
+            if status == "PARTIAL":
+                fail("PARTIAL SWING 주문에 확정 체결 수량이 없습니다")
+            if "confirmed_fill_amt" in order:
+                try:
+                    confirmed_amount = float(order["confirmed_fill_amt"])
+                except (TypeError, ValueError):
+                    fail("미확정 SWING 주문의 체결 금액 형식 오류")
+                if not math.isfinite(confirmed_amount) or confirmed_amount != 0:
+                    fail("미확정 SWING 주문에 확정되지 않은 체결 금액이 있습니다")
+            orders.append((created_at, index, order, 0, 0.0, True))
+        else:
+            requested, filled, amount = _terminal_fill_evidence(order)
+            if requested != 1:
+                fail("SWING 주문 수량이 1주 한도를 위반합니다")
+            orders.append((created_at, index, order, filled, amount, False))
+
+    current = None
+    last_exit_session = None
+    last_closed_position_id = None
+    pending = []
+    terminal_ids = {}
+    for created_at, _, order, filled, amount, unresolved in sorted(
+            orders, key=lambda item: (item[0], item[1])):
+        order_id = order["id"]
+        if unresolved:
+            pending.append(order)
+            continue
+        terminal_ids[order_id] = order
+        if not filled:
+            continue
+        if order["side"] == "BUY":
+            if current is not None or filled != 1 or number(order.get("requested_qty")) != 1:
+                fail("SWING 추가매수/잘못된 수량의 체결 기록이 있습니다")
+            metadata = order.get("strategy_metadata")
+            if not isinstance(metadata, dict):
+                fail("SWING 매수 체결 원장에 전략 메타데이터가 없습니다")
+            try:
+                entry_atr = float(metadata.get("entry_atr14"))
+                entry_session = metadata.get("entry_session")
+                signal_date = metadata.get("signal_date")
+                datetime.strptime(entry_session, "%Y-%m-%d")
+                datetime.strptime(signal_date, "%Y-%m-%d")
+                signal_close = float(metadata.get("signal_close"))
+            except (TypeError, ValueError):
+                fail("SWING 매수 체결 원장에 검증된 ATR/세션 메타데이터가 없습니다")
+            if (not math.isfinite(entry_atr) or entry_atr <= 0
+                    or not math.isfinite(signal_close) or signal_close <= 0
+                    or entry_session != created_at.strftime("%Y-%m-%d")
+                    or signal_date >= entry_session):
+                fail("SWING 매수 체결 원장의 ATR/가격/거래일 메타데이터가 일치하지 않습니다")
+            if last_exit_session == entry_session:
+                fail("SWING 동일 거래일 재진입 기록이 있습니다")
+            current = {
+                "position_id": order_id, "owned_qty": 1,
+                "verified_entry_price": amount / filled,
+                "entry_atr14": entry_atr, "entry_session": entry_session,
+                "entry_signal_date": signal_date,
+                "entry_signal_close": signal_close,
+            }
+        else:
+            if current is None or filled != 1 or number(order.get("requested_qty")) != 1:
+                fail("SWING 매도 체결이 확인된 포지션과 일치하지 않습니다")
+            last_exit_session = created_at.strftime("%Y-%m-%d")
+            last_closed_position_id = current["position_id"]
+            current = None
+    if any(order["side"] == "SELL" for order in pending) and current is None:
+        fail("미확정 SWING 매도와 검증된 포지션이 일치하지 않습니다")
+    pending_buys = [order for order in pending if order["side"] == "BUY"]
+    if len(pending_buys) > 1 or (pending_buys and current is not None):
+        fail("미확정 SWING 매수 주문이 복수로 존재합니다")
+    return current, last_exit_session, last_closed_position_id, pending, terminal_ids
+
+
+def rebuild_strategy_state():
+    """Derive ownership only from verified fills and keep trailing state per position."""
+    journal = read_journal()
+    entries = journal.get("orders", [])
+    if not isinstance(entries, list) or any(not isinstance(order, dict) for order in entries):
+        fail("주문 원장 형식 오류: orders는 객체 목록이어야 합니다")
     day = load_json(DAY_STATE_FILE, {"entry_time": None, "pyramided": False, "owned_qty": 0})
     baa = load_json(BAA_STATE_FILE, {"last_executed_date": None, "reinvest_pool": 0,
                                      "target_code": None, "owned_qty": 0})
+    swing_exists = SWING_STATE_FILE.exists()
+    swing = _validate_swing_state(load_json(SWING_STATE_FILE, default_swing_state()))
     day_qty, entry_time = 0, None
     baa_net = {}
     realized = 0.0
@@ -636,7 +1019,7 @@ def rebuild_strategy_state():
             fail("주문 저널의 체결 수량이 잘못되었습니다")
         if not filled:
             continue
-        delta = filled if order["side"] == "BUY" else -filled
+        delta = filled if order.get("side") == "BUY" else -filled
         if order.get("strategy") == "DAY":
             day_qty += delta
             if day_qty < 0:
@@ -648,11 +1031,14 @@ def rebuild_strategy_state():
             if delta < 0:
                 realized += number(order.get("confirmed_fill_amt")) - filled * float(order.get("sell_cost_basis") or 0)
         elif order.get("strategy") == "BAA":
-            code = order["code"]
+            code = order.get("code")
+            if not isinstance(code, str) or not code:
+                fail("BAA 원장 종목이 누락되었습니다")
             baa_net[code] = baa_net.get(code, 0) + delta
             if baa_net[code] < 0:
                 fail(f"BAA {code} 추적 수량 음수")
-    positive = [(c, q) for c, q in baa_net.items() if q > 0]
+
+    positive = [(code, qty) for code, qty in baa_net.items() if qty > 0]
     if len(positive) > 1:
         fail("BAA 종목이 복수로 남아 있습니다. 자동 리밸런싱 중단")
     new_baa_code, new_baa_qty = positive[0] if positive else (None, 0)
@@ -664,9 +1050,129 @@ def rebuild_strategy_state():
         day["pyramided"] = False
     baa.update({"target_code": new_baa_code, "owned_qty": new_baa_qty,
                 "realized_daytrade_pnl": round(realized, 2)})
+
+    position, last_exit_session, last_closed_id, pending, terminal_ids = \
+        _derive_swing_position(entries)
+    old_identity = (swing.get("position_id") or swing.get("entry_order_intent_id")
+                    if swing.get("schema_version") == 2
+                    else swing.get("entry_order_intent_id"))
+    old_qty = share_quantity(swing.get("owned_qty", 0))
+    old_last_exit = swing.get("last_exit_session")
+    if position:
+        same_position = old_identity == position["position_id"]
+        if old_qty and not same_position and old_identity != last_closed_id:
+            fail("SWING 상태 position_id와 검증된 저널 포지션이 일치하지 않습니다")
+        initial_stop = position["verified_entry_price"] - 2 * position["entry_atr14"]
+        preserve_trailing = False
+        if same_position:
+            for key, expected in (
+                ("verified_entry_price", position["verified_entry_price"]),
+                ("entry_atr14", position["entry_atr14"]),
+            ):
+                value = swing.get(key)
+                if value not in (None, 0, 0.0) and not math.isclose(
+                        float(value), expected, abs_tol=1.0):
+                    fail(f"SWING 동일 포지션의 {key}와 체결 저널이 일치하지 않습니다")
+            if swing.get("entry_session") not in (None, position["entry_session"]):
+                fail("SWING 동일 포지션의 entry_session이 체결 저널과 일치하지 않습니다")
+            stored_initial = swing.get("initial_stop")
+            if stored_initial is not None and not math.isclose(
+                    float(stored_initial), initial_stop, abs_tol=1.0):
+                fail("SWING 동일 포지션의 초기 스톱이 체결 저널과 일치하지 않습니다")
+            stored_active = swing.get("active_stop")
+            stored_high = swing.get("highest_completed_close")
+            if (old_qty and (stored_initial is None or stored_active is None)):
+                fail("SWING 동일 포지션의 활성 스톱 기록이 누락되었습니다")
+            if stored_active is None and stored_high is not None:
+                fail("SWING 고점 기록에 활성 스톱이 없습니다")
+            if stored_active is not None:
+                active = float(stored_active)
+                if active < initial_stop - 1:
+                    fail("SWING 활성 스톱이 초기 스톱보다 낮습니다")
+                if stored_high is None:
+                    if not math.isclose(active, initial_stop, abs_tol=1.0):
+                        fail("SWING 고점 기록 없는 활성 스톱이 초기 스톱과 다릅니다")
+                else:
+                    high = float(stored_high)
+                    trailing_limit = max(initial_stop, high - 3 * position["entry_atr14"])
+                    if active > trailing_limit + 1:
+                        fail("SWING 활성 스톱이 저장된 고점에서 산출한 값보다 높습니다")
+                preserve_trailing = True
+        if not same_position:
+            preserve_trailing = False
+        if swing.get("entry_order_intent_id") not in (None, position["position_id"]) and same_position:
+            fail("SWING entry_order_intent_id가 position_id와 다릅니다")
+        pending_sell = next((order for order in pending if order["side"] == "SELL"), None)
+        if (pending_sell and swing.get("exit_order_intent_id")
+                not in (None, pending_sell["id"])):
+            fail("미확정 SWING 매도 식별자가 상태와 일치하지 않습니다")
+        swing.update({
+            "schema_version": 2, "strategy": "SWING",
+            "position_id": position["position_id"], "owned_qty": 1,
+            "verified_entry_price": position["verified_entry_price"],
+            "entry_atr14": position["entry_atr14"],
+            "entry_session": position["entry_session"],
+            "entry_order_intent_id": position["position_id"],
+            "entry_signal_date": position["entry_signal_date"],
+            "entry_signal_close": position["entry_signal_close"],
+            "signal_atr14": position["entry_atr14"],
+            "entry_opportunity_date": position["entry_session"],
+            "entry_opportunity_status": "FILLED",
+            "entry_skip_reason": None,
+            "initial_stop": initial_stop,
+            "active_stop": (float(swing["active_stop"])
+                            if preserve_trailing and swing.get("active_stop") is not None
+                            else initial_stop),
+            "highest_completed_close": (float(swing["highest_completed_close"])
+                                        if preserve_trailing else None),
+        })
+        if not same_position:
+            swing["exit_intent"] = None
+            swing["exit_order_intent_id"] = None
+    else:
+        pending_buy = next((order for order in pending if order["side"] == "BUY"), None)
+        pending_sell = next((order for order in pending if order["side"] == "SELL"), None)
+        if old_qty and last_closed_id is None:
+            fail("SWING 상태 보유가 검증된 체결 원장에 없습니다")
+        if pending_sell:
+            fail("미확정 SWING 매도 이후 포지션 원장을 확인할 수 없습니다")
+        if pending_buy:
+            if swing.get("entry_order_intent_id") not in (None, pending_buy["id"]):
+                fail("미확정 SWING 매수 식별자가 상태와 일치하지 않습니다")
+            swing["entry_order_intent_id"] = pending_buy["id"]
+            swing["entry_opportunity_status"] = "SUBMITTING"
+        elif swing.get("entry_opportunity_status") == "SUBMITTING":
+            intent_id = swing.get("entry_order_intent_id")
+            terminal = terminal_ids.get(intent_id)
+            # execute_order persists the journal intent before any broker POST.
+            # A staged state without a journal row is therefore safe to retry.
+            swing["entry_opportunity_status"] = "CLOSED" if terminal else "PENDING"
+            swing["entry_order_intent_id"] = None
+        if last_closed_id or old_qty or swing.get("position_id"):
+            closed_identity = last_closed_id or old_identity
+            if swing.get("entry_order_intent_id") == closed_identity:
+                swing["entry_order_intent_id"] = None
+            if swing.get("entry_opportunity_status") == "FILLED":
+                swing["entry_opportunity_status"] = "CLOSED"
+            swing.update({
+                "position_id": None, "owned_qty": 0, "verified_entry_price": 0.0,
+                "entry_atr14": None, "entry_session": None, "initial_stop": None,
+                "active_stop": None, "highest_completed_close": None,
+                "exit_intent": None, "exit_order_intent_id": None,
+            })
+    if last_exit_session and (not old_last_exit or last_exit_session > old_last_exit):
+        swing["last_exit_session"] = last_exit_session
+    if last_closed_id and swing.get("entry_order_intent_id") == last_closed_id and not position:
+        swing["entry_order_intent_id"] = None
+    if not swing_exists and not any(order.get("strategy") == "SWING" for order in entries):
+        # Keep the initial migration marker absent until the account snapshot is checked.
+        swing["migration_status"] = "PENDING"
+
     # Preserve legacy reinvest_pool only as a report field; never double-count it in NAV.
     save_json(DAY_STATE_FILE, day)
     save_json(BAA_STATE_FILE, baa)
+    if swing_exists or any(order.get("strategy") == "SWING" for order in entries):
+        save_json(SWING_STATE_FILE, swing)
 
 
 def reconcile_orders(token: str):
@@ -710,8 +1216,13 @@ def reconcile_orders(token: str):
         else:
             status = "PARTIAL" if filled > 0 else "ACCEPTED"
         # The journal is committed BEFORE derived state. Recovery is idempotent.
-        update_journal(entry["id"], status=status, confirmed_fill_qty=filled,
-                       confirmed_fill_amt=amount)
+        updates = {
+            "status": status, "confirmed_fill_qty": filled,
+            "confirmed_fill_amt": amount,
+        }
+        if status == "CANCELED":
+            updates["confirmed_cancel_qty"] = canceled
+        update_journal(entry["id"], **updates)
     rebuild_strategy_state()
 
 
@@ -731,16 +1242,17 @@ def assert_no_pending(token):
 
 
 def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01",
-                  price=0, action_name="주문", strategy="BAA", cost_basis=0.0):
+                  price=0, action_name="주문", strategy="BAA", cost_basis=0.0,
+                  strategy_metadata=None):
     """Return (fully_filled, confirmed_qty), never requested/accepted quantity."""
     if qty <= 0:
         return False, 0
     if not DRY_RUN and now_kst().date() < LIVE_TRADING_START_DATE:
         fail(f"실거래 시작일({LIVE_TRADING_START_DATE}) 이전에는 주문을 차단합니다")
-    if order_type not in ("01", "02") or strategy not in ("DAY", "BAA"):
+    if order_type not in ("01", "02") or strategy not in ("SWING", "BAA"):
         fail("잘못된 주문 방향/전략")
-    if ord_dvsn != "01":
-        fail("이 버전은 시장가 주문만 승인합니다")
+    if ord_dvsn not in ("00", "01") or (ord_dvsn == "00" and number(price) <= 0):
+        fail("잘못된 주문구분/지정가")
     if not order_window() or not is_market_open_today(token):
         fail("정규장 시간 외 또는 휴장일에 주문 차단")
     assert_no_pending(token)
@@ -748,24 +1260,41 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
     if side == "BUY":
         check_daily_loss(token)
         current = get_current_price(token, code)
-        allowed = get_buyable_qty(token, code, current)
+        if ord_dvsn == "00" and current > number(price):
+            fail("현재가가 보호 지정가를 초과하여 매수 주문을 차단합니다")
+        allowed = get_buyable_qty(token, code, number(price) if ord_dvsn == "00" else current,
+                                  ord_dvsn=ord_dvsn)
         if qty > allowed:
             fail(f"매수가능 {allowed}주 < 요청 {qty}주: 수량 자동변경 없이 주문 차단")
         if code == CODE_BULL:
-            if strategy != "DAY":
-                fail("069500 매수는 DAY 전략만 허용")
+            if strategy != "SWING":
+                fail("069500 매수는 SWING 전략만 허용")
             holdings, _, _ = get_account_balance(token)
             actual_qty = share_quantity(holdings.get(code, {}).get("qty", 0))
-            day = load_json(DAY_STATE_FILE, {})
+            swing = load_json(SWING_STATE_FILE, {})
             baa = load_json(BAA_STATE_FILE, {})
-            if (actual_qty != share_quantity(day.get("owned_qty", 0))
+            day = load_json(DAY_STATE_FILE, {})
+            if (actual_qty != share_quantity(swing.get("owned_qty", 0))
+                    or number(day.get("owned_qty"))
                     or (baa.get("target_code") == code
                         and share_quantity(baa.get("owned_qty", 0)) > 0)):
                 fail("069500 주문 직전 잔고/전략 원장 불일치")
-            if actual_qty + qty > 1:
+            if qty != 1 or actual_qty + qty > 1:
                 fail("069500 계좌 총보유량 1주 상한 초과: 매수 차단")
     else:
         holdings, _, _ = get_account_balance(token)
+        if code == CODE_BULL:
+            if strategy != "SWING":
+                fail("기존 DAY/기타 전략의 069500 자동 매도는 비활성화되어 있습니다")
+            swing = load_json(SWING_STATE_FILE, {})
+            day = load_json(DAY_STATE_FILE, {})
+            baa = load_json(BAA_STATE_FILE, {})
+            actual_qty = share_quantity(holdings.get(code, {}).get("qty", 0))
+            if (actual_qty != share_quantity(swing.get("owned_qty", 0))
+                    or actual_qty > 1
+                    or number(day.get("owned_qty"))
+                    or (baa.get("target_code") == code and number(baa.get("owned_qty")))):
+                fail("069500 매도 직전 잔고/전략 소유권 불일치")
         if holdings.get(code, {}).get("qty", 0) < qty:
             fail(f"보유보다 많은 매도 차단 {code}:{qty}주")
     key = order_key(code, side, strategy, action_name)
@@ -780,10 +1309,13 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
              "requested_qty": qty, "status": "INTENT", "created_at": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
              "odno": None, "applied_fill_qty": 0, "applied_fill_amount": 0,
              "sell_cost_basis": float(cost_basis)}
+    if strategy_metadata:
+        order["strategy_metadata"] = strategy_metadata
     journal.setdefault("orders", []).append(order)
     save_json(TRADE_HISTORY_FILE, journal)
     body = {"CANO": KIS_CANO, "ACNT_PRDT_CD": KIS_ACNT_PRDT_CD, "PDNO": code,
-            "ORD_DVSN": ord_dvsn, "ORD_QTY": str(qty), "ORD_UNPR": "0",
+            "ORD_DVSN": ord_dvsn, "ORD_QTY": str(qty),
+            "ORD_UNPR": str(number(price)) if ord_dvsn == "00" else "0",
             "EXCG_ID_DVSN_CD": "KRX"}
     tr_id = ("TTTC0012U" if side == "BUY" else "TTTC0011U") if KIS_ENV == "real" else ("VTTC0012U" if side == "BUY" else "VTTC0011U")
     # As soon as a real order POST is attempted, later balance snapshots must refresh.
@@ -866,6 +1398,122 @@ def get_daily_closes(token: str, code: str, target_count: int = 252, *,
     return [by_date[x] for x in dates]
 
 
+def get_validated_daily_bars(token: str, session_date, target_count=100):
+    expected_latest = previous_exchange_session(token, session_date)
+    end = session_date
+    by_date = {}
+    seen_dates = set()
+    for _ in range(7):
+        start = end - timedelta(days=119)
+        result, _ = api_request(
+            "GET", "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", token,
+            tr_id="FHKST03010100", params={
+                "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": CODE_BULL,
+                "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+                "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0",
+            })
+        rows = result.get("output2")
+        if not isinstance(rows, list):
+            fail("069500 일봉 응답 목록 누락/형식 오류")
+        for row in rows:
+            if not isinstance(row, dict):
+                fail("069500 일봉 행 형식 오류")
+            day = row.get("stck_bsop_date")
+            if not isinstance(day, str) or len(day) != 8 or not day.isascii() or not day.isdigit():
+                fail("069500 일봉 날짜 형식 오류")
+            try:
+                bar_date = datetime.strptime(day, "%Y%m%d").date()
+            except ValueError:
+                fail(f"069500 일봉 날짜 오류: {day}")
+            if bar_date < start or bar_date > session_date:
+                fail(f"069500 일봉 날짜 범위 오류: {day}")
+            if day in seen_dates:
+                fail(f"069500 일봉 날짜 중복: {day}")
+            seen_dates.add(day)
+            if bar_date == session_date:
+                continue
+            if bar_date > session_date:
+                fail(f"069500 미래 일봉 데이터: {day}")
+            values = {}
+            for key, field in (("open", "stck_oprc"), ("high", "stck_hgpr"),
+                               ("low", "stck_lwpr"), ("close", "stck_clpr")):
+                try:
+                    value = float(str(row.get(field, "")).replace(",", ""))
+                except (TypeError, ValueError):
+                    fail(f"069500 일봉 {key} 형식 오류: {day}")
+                if not math.isfinite(value) or value <= 0:
+                    fail(f"069500 일봉 {key} 비정상: {day}")
+                values[key] = value
+            try:
+                volume = float(str(row.get("acml_vol", "")).replace(",", ""))
+            except (TypeError, ValueError):
+                fail(f"069500 일봉 거래량 형식 오류: {day}")
+            if not math.isfinite(volume) or volume < 0:
+                fail(f"069500 일봉 거래량 비정상: {day}")
+            if (values["high"] < max(values["open"], values["close"], values["low"])
+                    or values["low"] > min(values["open"], values["close"])):
+                fail(f"069500 일봉 OHLC 불일치: {day}")
+            values["date"] = bar_date
+            values["volume"] = volume
+            by_date[day] = values
+        if len(by_date) >= target_count:
+            break
+        end = start - timedelta(days=1)
+        time.sleep(0.16)
+    dates = sorted(by_date)
+    if not dates or dates[-1] != expected_latest.strftime("%Y%m%d"):
+        fail("069500 최신 완료 일봉이 KIS 거래일 기준 직전 거래일과 일치하지 않습니다")
+    if len(dates) < target_count:
+        fail(f"069500 검증 일봉 부족: {len(dates)}/{target_count}")
+    return [by_date[day] for day in dates[-target_count:]]
+
+
+def wilder_atr(bars, period=14):
+    if len(bars) < period + 1:
+        fail(f"ATR{period} 계산에 최소 {period + 1}개 완료 일봉이 필요합니다")
+    ranges = []
+    for prior, current in zip(bars, bars[1:]):
+        ranges.append(max(
+            current["high"] - current["low"],
+            abs(current["high"] - prior["close"]),
+            abs(current["low"] - prior["close"]),
+        ))
+    if len(ranges) < period:
+        fail(f"ATR{period} 초기화 이력 부족")
+    atr = sum(ranges[:period]) / period
+    for true_range in ranges[period:]:
+        atr = (13 * atr + true_range) / 14
+    return atr
+
+
+def swing_signal(bars):
+    if len(bars) < 100:
+        fail("SWING 신호 계산에 최소 100개 완료 일봉이 필요합니다")
+    closes = [bar["close"] for bar in bars]
+    latest = closes[-1]
+    breakout = latest > max(closes[-21:-1])
+    sma20 = sum(closes[-20:]) / 20
+    sma60 = sum(closes[-60:]) / 60
+    atr14 = wilder_atr(bars, 14)
+    trend_exit = latest < min(closes[-11:-1])
+    return {
+        "entry": breakout and sma20 > sma60,
+        "trend_exit": trend_exit,
+        "close": latest, "sma20": sma20, "sma60": sma60,
+        "atr14": atr14, "signal_date": bars[-1]["date"].isoformat(),
+    }
+
+
+def limit_buy_tick(price):
+    bands = ((2000, 1), (5000, 5), (20000, 10), (50000, 50),
+             (200000, 100), (500000, 500), (float("inf"), 1000))
+    for ceiling, tick in bands:
+        if price < ceiling:
+            return int(price // tick * tick)
+    return int(price)
+
+
 def calc_fast_baa(closes: list) -> float:
     n = len(closes)
     if n < 252 or any(x <= 0 for x in closes):
@@ -876,108 +1524,215 @@ def calc_fast_baa(closes: list) -> float:
             + 2.0 * (curr / p_6m - 1) + (curr / p_12m - 1))
 
 
-def collect_minute_candles(token: str):
-    cursor = now_kst().replace(second=0, microsecond=0)
-    collected = {}
-    for _ in range(4):
-        result, _ = api_request("GET", "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
-                                token, tr_id="FHKST03010200", params={
-                                    "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": CODE_BULL,
-                                    "FID_INPUT_HOUR_1": cursor.strftime("%H%M%S"),
-                                    "FID_PW_DATA_INCU_YN": "Y", "FID_ETC_CLS_CODE": "",
-                                })
-        rows = result.get("output2") or []
-        times = []
-        for c in rows:
-            timestamp = str(c.get("stck_cntg_hour", ""))
-            price, vol = number(c.get("stck_prpr")), number(c.get("cntg_vol"))
-            if len(timestamp) >= 6 and timestamp[:6].isdigit() and price > 0 and vol >= 0:
-                stamp = timestamp[:6]
-                collected[stamp] = {"time": stamp, "price": price, "volume": vol}
-                times.append(stamp)
-        if not times:
-            break
-        oldest = min(times)
-        cursor = cursor.replace(hour=int(oldest[:2]), minute=int(oldest[2:4])) - timedelta(minutes=1)
-        if cursor.strftime("%H:%M") < MARKET_START:
-            break
-        if len(collected) >= 75:
-            break
-        time.sleep(0.16)
-    return [collected[k] for k in sorted(collected)]
-
-
 # ==============================================================================
-# 5. 데이트레이딩 (KODEX 200) 감시
+# 5. KODEX 200 SWING strategy
 # ==============================================================================
-def check_daytrade_signal(token: str) -> bool:
-    candles = collect_minute_candles(token)
-    # Last current 1-minute bar may be still open; exclude it by timestamp.
-    now_minute = now_kst().strftime("%H%M")
-    completed = [x for x in candles if x["time"][:4] < now_minute]
-    if len(completed) < 60:
-        print(f">> [단타 관망] 확정 분봉 데이터 부족 ({len(completed)}개, 최소 60개 필요)")
-        return False
-    closes = [float(x["price"]) for x in completed]
-    volumes = [float(x["volume"]) for x in completed]
-    ema20 = sum(closes[-20:]) / 20  # 기존 구현과 동일한 단순평균(SMA); 명칭만 legacy
-    ema60 = sum(closes[-60:]) / 60
-    vol_ma20 = sum(volumes[-20:]) / 20
-    last_close, last_vol = closes[-1], volumes[-1]
-    curr_price = float(get_current_price(token, CODE_BULL))
-    vol_cond = vol_ma20 > 0 and last_vol >= vol_ma20 * 1.2
-    ema_cond = ema20 > ema60
-    price_cond = curr_price > last_close
-    if vol_cond and ema_cond and price_cond:
-        return True
-    reasons = []
-    if not vol_cond:
-        reasons.append(f"거래량 부족(현재 {last_vol:,.0f} < 필요 {vol_ma20*1.2:,.0f})")
-    if not ema_cond:
-        reasons.append(f"이평선 역배열(SMA20 {ema20:,.0f} <= SMA60 {ema60:,.0f})")
-    if not price_cond:
-        reasons.append(f"모멘텀 부족(현재가 {curr_price:,.0f} <= 직전종가 {last_close:,.0f})")
-    print(f">> [단타 관망] {', '.join(reasons)}")
-    return False
-
-
-def run_intraday(token: str, holdings: dict, deposit: int, total_asset: int):
+def run_swing(token: str, holdings: dict, deposit: int, total_asset: int):
     now = now_kst()
+    today = now.date()
     time_hm = now.strftime("%H:%M")
-    actual = holdings.get(CODE_BULL, {"qty": 0, "avg_price": 0.0})
-    actual_qty = number(actual["qty"])
-    state = load_json(DAY_STATE_FILE, {"entry_time": None, "pyramided": False, "owned_qty": 0})
-    owned = number(state.get("owned_qty"))
-    baa = load_json(BAA_STATE_FILE, {"owned_qty": 0, "target_code": None})
-    if actual_qty < owned or (baa.get("target_code") == CODE_BULL and number(baa.get("owned_qty")) > 0):
-        fail("069500 단타/BAA 추적 물량 충돌: 수동 확인 전 거래 중단")
-    if actual_qty != owned:
-        print(">> [단타 안전대기] 069500 계좌 보유량과 단타 추적량 불일치 (외부/기존 보유). 거래 차단")
+    try:
+        state = migrate_swing_state_if_safe(holdings)
+    except TradeSafetyError as exc:
+        print(f">> [SWING 중단/BAA 유지] {exc}")
         return
-    curr_price = get_current_price(token, CODE_BULL)
-    intraday_budget = total_asset * DAY_BUDGET_RATIO
-    print(f"\n--- [데이트레이딩 점검: {time_hm}] ---")
-    print(f"• KODEX 200 단타 추적: {owned}주 | 현재가: {curr_price:,}원 | 단타 배정예산: {intraday_budget:,.0f}원")
-    if owned == 0:
-        if "09:15" <= time_hm <= "14:30":
-            if check_daytrade_signal(token):
-                base_budget = min(float(deposit), float(intraday_budget * WEIGHT_BASE)) * 0.96
-                base_qty = min(1, int(base_budget // curr_price))
-                if base_qty > 0:
-                    execute_order(token, CODE_BULL, base_qty, "02", action_name="단타 1차 매수", strategy="DAY")
+    actual_qty = share_quantity(holdings.get(CODE_BULL, {}).get("qty", 0))
+    owned = share_quantity(state.get("owned_qty", 0))
+    day = load_json(DAY_STATE_FILE, {})
+    baa = load_json(BAA_STATE_FILE, {})
+    if (actual_qty != owned or actual_qty > 1 or number(day.get("owned_qty"))
+            or (baa.get("target_code") == CODE_BULL and number(baa.get("owned_qty")))):
+        try:
+            fail("069500 잔고/전략 소유권 불일치: SWING 자동화를 중단합니다")
+        except TradeSafetyError as exc:
+            print(f">> [SWING 중단/BAA 유지] {exc}")
+        return
+    if owned:
+        actual_avg = float(holdings.get(CODE_BULL, {}).get("avg_price") or 0)
+        verified_avg = float(state.get("verified_entry_price") or 0)
+        if actual_avg <= 0 or verified_avg <= 0 or not math.isclose(actual_avg, verified_avg, abs_tol=1.0):
+            try:
+                fail("069500 계좌 평균매입가와 SWING 확인 체결가가 다릅니다")
+            except TradeSafetyError as exc:
+                print(f">> [SWING 중단/BAA 유지] {exc}")
+            return
+
+    bars = None
+    signal = None
+    try:
+        bars = get_validated_daily_bars(token, today)
+        signal = swing_signal(bars)
+        state["data_status"] = "CURRENT"
+        state["data_error"] = None
+        state["data_as_of_date"] = signal["signal_date"]
+    except TradeSafetyError as exc:
+        state["data_status"] = "INVALID_OR_STALE"
+        state["data_error"] = str(exc)
+        save_json(SWING_STATE_FILE, state)
+        print(f">> [SWING 진입 차단] 일봉 데이터 검증 실패: {exc}")
+
+    if bars:
+        latest_date = signal["signal_date"]
+        if state.get("last_processed_bar_date") != latest_date:
+            if owned and state.get("entry_session"):
+                entry_date = datetime.strptime(state["entry_session"], "%Y-%m-%d").date()
+                eligible_closes = [bar["close"] for bar in bars if bar["date"] >= entry_date]
+                if eligible_closes:
+                    highest = max(
+                        float(state.get("highest_completed_close") or 0),
+                        max(eligible_closes),
+                    )
+                    initial_stop = float(state.get("initial_stop") or 0)
+                    fixed_atr = float(state.get("entry_atr14") or 0)
+                    state["highest_completed_close"] = highest
+                    state["active_stop"] = max(
+                        float(state.get("active_stop") or initial_stop),
+                        initial_stop, highest - 3 * fixed_atr,
+                    )
+            state["last_processed_bar_date"] = latest_date
+            if state.get("signal_date") != latest_date:
+                try:
+                    next_session = next_exchange_session(token, bars[-1]["date"])
+                except TradeSafetyError as exc:
+                    print(f">> [SWING 진입 차단] 다음 거래일 검증 실패: {exc}")
+                    print(">> [SWING 신호 차단] 최신 완료 일봉의 다음 거래일이 오늘과 다릅니다.")
+                    state["signal_status"] = "DATA_SESSION_MISMATCH"
+                    state["entry_opportunity_status"] = "NONE"
                 else:
-                    print(">> [단타 관망] 안전 예산으로 1주도 매수할 수 없습니다.")
+                    if next_session != today:
+                        print(">> [SWING 신호 차단] 최신 완료 일봉의 다음 거래일이 오늘과 다릅니다.")
+                        state["signal_status"] = "DATA_SESSION_MISMATCH"
+                        state["entry_opportunity_status"] = "NONE"
+                    else:
+                        state.update({
+                            "signal_date": latest_date,
+                            "signal_status": "ENTRY" if signal["entry"] else "NO_ENTRY",
+                            "entry_signal_date": latest_date if signal["entry"] else None,
+                            "entry_signal_close": signal["close"] if signal["entry"] else None,
+                            "signal_atr14": signal["atr14"] if signal["entry"] else None,
+                            "entry_opportunity_date": today.isoformat() if signal["entry"] else None,
+                            "entry_opportunity_status": "PENDING" if signal["entry"] else "NONE",
+                            "entry_skip_reason": None,
+                        })
+            if owned and signal["trend_exit"]:
+                state["exit_intent"] = state.get("exit_intent") or "TREND"
+            save_json(SWING_STATE_FILE, state)
         else:
-            print(">> [단타 대기] 신규 진입 시간대(09:15~14:30) 외 구간입니다.")
-    else:
-        avg = float(actual.get("avg_price") or 0)
-        if avg <= 0:
-            fail("단타 평균 매입 단가 확인 실패")
-        profit_ratio = (curr_price - avg) / avg
-        if profit_ratio >= PROFIT_TARGET:
-            execute_order(token, CODE_BULL, owned, "01", action_name="목표익절", strategy="DAY", cost_basis=avg)
-        elif profit_ratio <= STOP_LOSS:
-            execute_order(token, CODE_BULL, owned, "01", action_name="칼손절", strategy="DAY", cost_basis=avg)
+            save_json(SWING_STATE_FILE, state)
+
+    if state.get("entry_opportunity_status") == "PENDING":
+        opportunity = state.get("entry_opportunity_date")
+        if opportunity and opportunity < today.isoformat():
+            state["entry_opportunity_status"] = "EXPIRED"
+            state["entry_skip_reason"] = "next exchange session passed"
+            save_json(SWING_STATE_FILE, state)
+
+    if not owned:
+        if (not bars or state.get("entry_opportunity_date") != today.isoformat()
+                or state.get("entry_opportunity_status") != "PENDING"
+                or state.get("last_exit_session") == today.isoformat()):
+            return
+        if not ("09:10" <= time_hm <= "14:30"):
+            print(">> [SWING 대기] 신규 진입 시간(09:10-14:30) 밖이며 기회는 유지됩니다.")
+            return
+        try:
+            quote = get_current_price(token, CODE_BULL)
+        except TradeSafetyError as exc:
+            state["entry_opportunity_status"] = "SKIPPED"
+            state["entry_skip_reason"] = f"current quote unavailable: {exc}"
+            save_json(SWING_STATE_FILE, state)
+            print(f">> [SWING 진입 차단] {exc}")
+            return
+        signal_close = float(state["entry_signal_close"])
+        signal_atr = float(state["signal_atr14"])
+        max_price = signal_close + signal_atr
+        limit_price = limit_buy_tick(max_price)
+
+        def skip_entry(reason):
+            state["entry_opportunity_status"] = "SKIPPED"
+            state["entry_skip_reason"] = reason
+            save_json(SWING_STATE_FILE, state)
+            print(f">> [SWING 진입 생략] {reason}")
+
+        if quote > max_price:
+            skip_entry("anti-chasing: quote above signal close + ATR14")
+            return
+        if quote > limit_price:
+            skip_entry("anti-chasing: no valid tick price at or below the signal cap")
+            return
+        sleeve_budget = min(
+            float(total_asset) * SWING_BUDGET_RATIO * SWING_INITIAL_WEIGHT,
+            float(deposit),
+        ) * 0.96
+        if limit_price <= 0 or limit_price > sleeve_budget:
+            skip_entry("former DAY sleeve or available cash cannot fund one share")
+            return
+        try:
+            buyable_qty = get_buyable_qty(token, CODE_BULL, limit_price, ord_dvsn="00")
+        except TradeSafetyError as exc:
+            skip_entry(f"broker buyability check failed: {exc}")
+            return
+        if buyable_qty < 1:
+            skip_entry("broker-reported buyable quantity is below one share")
+            return
+        intent_id = order_key(CODE_BULL, "BUY", "SWING", "SWING entry")
+        state["entry_opportunity_status"] = "SUBMITTING"
+        state["entry_order_intent_id"] = intent_id
+        save_json(SWING_STATE_FILE, state)
+        filled, fill_qty = execute_order(
+            token, CODE_BULL, 1, "02", ord_dvsn="00", price=limit_price,
+            action_name="SWING entry", strategy="SWING",
+            strategy_metadata={
+                "entry_atr14": signal_atr, "signal_date": state["entry_signal_date"],
+                "signal_close": signal_close, "entry_session": today.isoformat(),
+            })
+        if filled and fill_qty == 1:
+            rebuild_strategy_state()
+            state = load_json(SWING_STATE_FILE, default_swing_state())
+            state["entry_opportunity_status"] = "FILLED"
+            state["entry_atr14"] = signal_atr
+            state["initial_stop"] = state["verified_entry_price"] - 2 * signal_atr
+            state["active_stop"] = state["initial_stop"]
+            save_json(SWING_STATE_FILE, state)
+        elif DRY_RUN:
+            state["entry_opportunity_status"] = "DRY_RUN"
+            state["entry_skip_reason"] = "dry-run: no order submitted"
+            state["entry_order_intent_id"] = None
+            save_json(SWING_STATE_FILE, state)
+        return
+
+    if not ("09:00" <= time_hm <= "15:20"):
+        return
+    try:
+        quote = get_current_price(token, CODE_BULL)
+    except TradeSafetyError as exc:
+        print(f">> [SWING 보유 위험관리 보류] 유효 현재가 없음: {exc}")
+        return
+    active_stop = state.get("active_stop")
+    if active_stop is not None and quote <= float(active_stop):
+        state["exit_intent"] = "PROTECTIVE_STOP"
+        save_json(SWING_STATE_FILE, state)
+    if state.get("exit_intent"):
+        avg_price = float(state.get("verified_entry_price") or 0)
+        if avg_price <= 0:
+            fail("SWING 확인 체결 평균가가 없어 매도를 중단합니다")
+        reason = state["exit_intent"]
+        state["exit_order_intent_id"] = order_key(
+            CODE_BULL, "SELL", "SWING", f"SWING exit {reason}"
+        )
+        save_json(SWING_STATE_FILE, state)
+        filled, fill_qty = execute_order(
+            token, CODE_BULL, owned, "01", action_name=f"SWING exit {reason}",
+            strategy="SWING", cost_basis=avg_price,
+        )
+        if filled and fill_qty == owned:
+            rebuild_strategy_state()
+            state = load_json(SWING_STATE_FILE, default_swing_state())
+            state["exit_intent"] = None
+            state["exit_order_intent_id"] = None
+            state["last_exit_session"] = today.isoformat()
+            state["entry_opportunity_status"] = "CLOSED"
+            save_json(SWING_STATE_FILE, state)
 
 
 # ==============================================================================
@@ -1029,11 +1784,40 @@ def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
     recovered = not FORCE_BAA and now.strftime("%H:%M") > "14:53"
     print(">> [중간 결산] 14:53 결산 예약의 장중 카나리아·BAA 잠정 리포트를 생성합니다.")
     code, name, is_defense, logs, _ = select_baa_target(token)
+    swing = load_json(SWING_STATE_FILE, default_swing_state())
+    swing_status = (f"수량 {number(swing.get('owned_qty'))}주 / 확인 체결가 "
+                    f"{number(swing.get('verified_entry_price')):,}원 / "
+                    f"신호 {swing.get('signal_date') or '없음'} "
+                    f"({swing.get('signal_status') or '미평가'})")
+    swing_levels = (f"고정 진입 ATR {number(swing.get('entry_atr14')):,.0f}원 / "
+                    f"초기·활성 스톱 {number(swing.get('initial_stop')):,}원 / "
+                    f"{number(swing.get('active_stop')):,}원")
+    swing_entry = (f"진입기회 {swing.get('entry_opportunity_status') or '없음'}"
+                   f"{': ' + str(swing.get('entry_skip_reason')) if swing.get('entry_skip_reason') else ''}")
+    swing_exit = (f"최근 완료 일봉 {swing.get('last_processed_bar_date') or '없음'} / "
+                  f"고점 종가 {number(swing.get('highest_completed_close')):,}원 / "
+                  f"청산 의도 {swing.get('exit_intent') or '없음'}")
+    swing_data = (f"일봉 {swing.get('data_status') or '미확인'} "
+                  f"({swing.get('data_as_of_date') or '기준일 없음'})"
+                  f"{': ' + str(swing.get('data_error')) if swing.get('data_error') else ''}")
+    pending_swing = [
+        f"{order.get('id')}:{order.get('status')}"
+        for order in journal_orders()
+        if order.get("strategy") == "SWING"
+        and order.get("status") in {"INTENT", "UNCERTAIN", "ACCEPTED", "PARTIAL", "UNKNOWN"}
+    ]
     msg = (f"📋 <b>[장중 중간 결산(잠정) - {'지연 복구' if recovered else '14:53 예약'}]</b>\n📅 날짜: {now:%Y-%m-%d} / 실제 조회: {now:%H:%M} KST\n"
            f"━━━━━━━━━━━━━━━━━━━━\n• 운용 모드: {'🛡️ 수비 모드' if is_defense else '🚀 공격 모드'}\n"
            f"• 선정 타깃: <b>{html.escape(name)} ({code})</b>\n"
            f"• 카나리아 점검: {html.escape(', '.join(logs))}\n"
-           f"• 총 평가 자산: {total_asset:,.0f}원\n━━━━━━━━━━━━━━━━━━━━")
+           f"• 총 평가 자산: {total_asset:,.0f}원\n"
+           f"• SWING(KODEX 200): {html.escape(swing_status)}\n"
+           f"• {html.escape(swing_levels)}\n"
+           f"• {html.escape(swing_entry)}\n"
+           f"• {html.escape(swing_exit)}\n"
+           f"• 데이터 신선도: {html.escape(swing_data)}\n"
+           f"• 미확정 SWING 주문: {html.escape(', '.join(pending_swing) if pending_swing else '없음')}\n"
+           f"• 현재 실행 시각: {now:%H:%M:%S} KST; 종가 확정 전 잠정 보고\n━━━━━━━━━━━━━━━━━━━━")
     send_telegram(msg, is_alert=recovered)
     if not FORCE_BAA:
         state["last_report_date"] = now.strftime("%Y-%m-%d")
@@ -1073,13 +1857,13 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
         return
     old_code = state.get("target_code")
     tracked_qty = number(state.get("owned_qty"))
-    day_owned = number(load_json(DAY_STATE_FILE, {"owned_qty": 0}).get("owned_qty"))
-    if day_owned > 0 and code == CODE_BULL:
-        fail("BAA 타깃이 단타 보유 069500과 충돌: 리밸런싱 매매 차단")
+    swing_owned = number(load_json(SWING_STATE_FILE, {"owned_qty": 0}).get("owned_qty"))
+    if swing_owned > 0 and code == CODE_BULL:
+        fail("BAA 타깃이 SWING 보유 069500과 충돌: 리밸런싱 매매 차단")
     if code == CODE_BULL:
-        fail("BAA 타깃 069500은 단타와 계좌 내 물량 식별 불가: 매매 차단 (계좌 분리 필요)")
+        fail("BAA 타깃 069500은 SWING과 계좌 내 물량 식별 불가: 매매 차단 (계좌 분리 필요)")
     if old_code == CODE_BULL:
-        fail("기존 BAA 069500 상태 기록이 있습니다. 자동 편입/청산 금지, 수동 계좌 대조 필요")
+        fail("기존 BAA 069500 상태 기록이 있습니다. SWING/BAA 소유권 수동 계좌 대조 필요")
     if tracked_qty > holdings.get(old_code, {}).get("qty", 0):
         fail("BAA 추적 보유량과 실제 잔고 불일치")
     # Without owner record, must not liquidate user's other holdings.
@@ -1190,7 +1974,7 @@ def main():
         print(f">> 계좌 예수금: {deposit:,}원 | 총 평가자산: {total_asset:,}원 | 보유종목수: {len(holdings)}개")
         adopt_verified_legacy_baa(token, holdings)
         before_intraday_orders = ACCOUNT_ORDER_ATTEMPTS
-        run_intraday(token, holdings, deposit, total_asset)
+        run_swing(token, holdings, deposit, total_asset)
         # Always reconcile before BAA; no automatic reorders on uncertain fills.
         assert_no_pending(token)
         # Refresh before BAA when the bot placed an order, or when BAA may trade.

@@ -26,9 +26,10 @@ class BotSafetyTests(unittest.TestCase):
         start_date_patcher.start()
         self.addCleanup(start_date_patcher.stop)
         base = Path(self.tmp.name)
-        for name in ('BASE_DIR', 'DAY_STATE_FILE', 'BAA_STATE_FILE', 'TRADE_HISTORY_FILE', 'RISK_STATE_FILE'):
+        for name in ('BASE_DIR', 'DAY_STATE_FILE', 'SWING_STATE_FILE', 'BAA_STATE_FILE', 'TRADE_HISTORY_FILE', 'RISK_STATE_FILE'):
             value = base if name == 'BASE_DIR' else base / {
                 'DAY_STATE_FILE': 'day_state.json',
+                'SWING_STATE_FILE': 'swing_state.json',
                 'BAA_STATE_FILE': 'baa_state.json',
                 'TRADE_HISTORY_FILE': 'trade_history.json',
                 'RISK_STATE_FILE': 'risk_state.json',
@@ -241,6 +242,7 @@ class FullCoverageTests(unittest.TestCase):
         files = {
             'BASE_DIR': base,
             'DAY_STATE_FILE': base / 'day_state.json',
+            'SWING_STATE_FILE': base / 'swing_state.json',
             'BAA_STATE_FILE': base / 'baa_state.json',
             'TRADE_HISTORY_FILE': base / 'trade_history.json',
             'RISK_STATE_FILE': base / 'risk_state.json',
@@ -632,63 +634,6 @@ class StrategyAndIntegrationTests(unittest.TestCase):
     owned = FullCoverageTests.owned
     fixed_time = FullCoverageTests.fixed_time
 
-    def test_intraday_entry_signal_creates_one_share_intent_only(self):
-        with self.fixed_time(10, 20), patch.object(bot, 'DRY_RUN', True), \
-             patch.object(bot,'get_current_price',return_value=95000), \
-             patch.object(bot,'check_daytrade_signal',return_value=True), \
-             patch.object(bot,'execute_order',return_value=(False,0)) as order:
-            bot.run_intraday('fake', {}, 300159, 964929)
-        order.assert_called_once()
-        args,kw=order.call_args
-        self.assertEqual((args[1],args[2],args[3]),('069500',1,'02'))
-        self.assertEqual(kw['strategy'],'DAY')
-
-    def test_intraday_exit_profit_threshold_places_sell(self):
-        self.write('day_state.json', {'owned_qty':2, 'entry_time':'2026-10-14 09:10'})
-        with self.fixed_time(10,20),patch.object(bot,'get_current_price',return_value=101300),\
-             patch.object(bot,'execute_order') as order:
-            bot.run_intraday('fake', {'069500':{'qty':2,'avg_price':100000}}, 50000, 250000)
-        order.assert_called_once()
-        args,kwargs=order.call_args
-        self.assertEqual((args[1],args[2],args[3]),('069500',2,'01'))
-        self.assertEqual(kwargs['action_name'],'목표익절')
-
-    def test_intraday_exit_stop_loss_threshold_places_sell(self):
-        self.write('day_state.json', {'owned_qty':2, 'entry_time':'2026-10-14 09:10'})
-        with self.fixed_time(10,20),patch.object(bot,'get_current_price',return_value=99000),\
-             patch.object(bot,'execute_order') as order:
-            bot.run_intraday('fake', {'069500':{'qty':2,'avg_price':100000}}, 50000, 250000)
-        order.assert_called_once()
-        self.assertEqual(order.call_args.kwargs['action_name'],'칼손절')
-
-    def test_intraday_rejects_untracked_shares_without_order(self):
-        with self.fixed_time(10,20),patch.object(bot,'execute_order') as order:
-            bot.run_intraday('fake', {'069500':{'qty':1,'avg_price':95000}},300159,964929)
-        order.assert_not_called()
-
-    def test_intraday_rejects_owned_shares_missing_at_broker(self):
-        self.write('day_state.json', {'owned_qty':1})
-        with self.fixed_time(10,20),patch.object(bot,'execute_order') as order:
-            with self.assertRaisesRegex(bot.TradeSafetyError,'충돌'):
-                bot.run_intraday('fake',{},300159,964929)
-        order.assert_not_called()
-
-    def test_intraday_insufficient_minute_candles_no_signal(self):
-        with self.fixed_time(10,20),patch.object(bot,'collect_minute_candles',return_value=[
-            {'time':'095900','price':95000,'volume':1000}]*59),\
-             patch.object(bot,'get_current_price') as current:
-            self.assertFalse(bot.check_daytrade_signal('fake'))
-        current.assert_not_called()
-
-    def test_intraday_short_volume_signal_stays_false(self):
-        bars=[]
-        for i in range(60):
-            bars.append({'time':f'{9+(i//60):02d}{i%60:02d}00',
-                         'price':90000+i*10,'volume':100})
-        with self.fixed_time(10,20),patch.object(bot,'collect_minute_candles',return_value=bars),\
-             patch.object(bot,'get_current_price',return_value=90700):
-            self.assertFalse(bot.check_daytrade_signal('fake'))
-
     def test_fast_baa_returns_expected_252_day_score(self):
         data=[100.+i*0.1 for i in range(252)]
         ans=bot.calc_fast_baa(data)
@@ -783,11 +728,10 @@ class StrategyAndIntegrationTests(unittest.TestCase):
              patch.object(bot,'is_market_open_today',return_value=True),\
              patch.object(bot,'get_account_balance',return_value=(holdings,300159,964929)),\
              patch.object(bot,'get_order_records',return_value=[]),\
-             patch.object(bot,'get_current_price',return_value=95000),\
-             patch.object(bot,'check_daytrade_signal',return_value=False),\
+             patch.object(bot,'run_swing',side_effect=lambda *a,**k:timeline.append('swing')),\
              patch.object(bot,'run_baa',side_effect=lambda *a,**k:timeline.append('baa')):
             bot.main()
-        self.assertEqual(timeline,['baa'])
+        self.assertEqual(timeline,['swing','baa'])
         self.assertEqual(bot.load_json(bot.BAA_STATE_FILE,{})['owned_qty'],6)
         self.assertEqual(len(bot.read_journal()['orders']),1)
 

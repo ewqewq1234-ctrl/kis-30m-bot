@@ -13,7 +13,7 @@ parser.add_argument("--source", type=Path, default=Path.cwd())
 parser.add_argument(
     "modules",
     nargs="*",
-    default=["test_bot_once", "test_api_resilience", "test_one_share"],
+    default=["test_bot_once", "test_api_resilience", "test_one_share", "test_swing_strategy"],
 )
 args = parser.parse_args()
 source = args.source.resolve()
