@@ -2037,7 +2037,7 @@ def _parse_workflow_timestamp(value, label):
 
 def scheduled_trade_skip_reason(now):
     """Scheduling latency is diagnostic only; use the actual trading window."""
-    if RUN_REPORT_ONLY:
+    if os.getenv("GITHUB_EVENT_NAME") != "schedule" or RUN_REPORT_ONLY:
         return None
     if now.weekday() >= 5 or not (MARKET_START <= now.strftime("%H:%M") <= MARKET_END):
         return "실제 실행 시각이 매매 가능 시간 밖이므로 매매를 차단했습니다."
