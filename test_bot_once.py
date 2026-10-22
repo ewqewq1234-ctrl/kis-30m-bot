@@ -769,7 +769,7 @@ class StrategyAndIntegrationTests(unittest.TestCase):
         baa.assert_not_called()
         order.assert_not_called()
 
-    def test_late_scheduled_main_skips_all_trade_strategies(self):
+    def test_late_scheduled_main_evaluates_fresh_trade_strategies(self):
         env = {
             'GITHUB_EVENT_NAME': 'schedule',
             'BOT_SCHEDULE_CRON': '5 11 * * 1-5',
@@ -786,17 +786,20 @@ class StrategyAndIntegrationTests(unittest.TestCase):
              patch.object(bot, 'DRY_RUN', True), \
              patch.object(bot, 'get_access_token', return_value='fake'), \
              patch.object(bot, 'is_market_open_today', return_value=True), \
+             patch.object(bot, 'get_account_balance', return_value=({}, 100000, 100000)), \
+             patch.object(bot, 'adopt_verified_legacy_baa'), \
+             patch.object(bot, 'handle_daily_closing_report'), \
              patch.object(bot, 'assert_no_pending') as reconcile, \
              patch.object(bot, 'run_swing') as swing, \
              patch.object(bot, 'run_baa') as baa, \
              patch.object(bot, 'execute_order') as order, \
              patch.object(bot, 'send_telegram') as telegram:
             bot.main()
-        reconcile.assert_not_called()
-        swing.assert_not_called()
-        baa.assert_not_called()
+        self.assertGreaterEqual(reconcile.call_count, 1)
+        swing.assert_called_once()
+        baa.assert_called_once()
         order.assert_not_called()
-        self.assertTrue(telegram.call_args.kwargs['is_alert'])
+        telegram.assert_not_called()
 
     def test_main_drives_migration_first_then_trade_decisions(self):
         """Scenario with mocked broker data; simulate runner orchestration."""
