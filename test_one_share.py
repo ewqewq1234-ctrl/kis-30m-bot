@@ -474,29 +474,27 @@ class OneShareTests(unittest.TestCase):
             bot.monitor_scheduled_execution()
         telegram.assert_not_called()
 
-    def test_scheduled_trade_guard_rejects_late_and_unidentified_runs(self):
-        now = bot.KST.localize(datetime(2026, 10, 21, 11, 12))
+    def test_scheduled_trade_guard_accepts_delays_and_missing_timestamps(self):
         env = {
             "GITHUB_EVENT_NAME": "schedule",
             "BOT_SCHEDULE_CRON": "5 11 * * 1-5",
             "BOT_SCHEDULE_SLOT_KST": "11:05",
             "BOT_RUN_CREATED_AT": "2026-10-21T02:12:00Z",
-            "BOT_RUN_STARTED_AT": "2026-10-21T02:12:00Z",
+            "BOT_RUN_STARTED_AT": "2026-10-21T04:00:00Z",
         }
         with patch.dict(os.environ, env), patch.object(bot, "RUN_REPORT_ONLY", False):
-            reason = bot.scheduled_trade_skip_reason(now)
-        self.assertIn("늦게 생성", reason)
-
-        env["BOT_RUN_CREATED_AT"] = "2026-10-21T02:05:00Z"
-        env["BOT_RUN_STARTED_AT"] = "2026-10-21T02:11:00Z"
-        with patch.dict(os.environ, env), patch.object(bot, "RUN_REPORT_ONLY", False):
-            reason = bot.scheduled_trade_skip_reason(now)
-        self.assertIn("대기시간", reason)
-
-        env.pop("BOT_RUN_CREATED_AT")
-        with patch.dict(os.environ, env), patch.object(bot, "RUN_REPORT_ONLY", False):
-            reason = bot.scheduled_trade_skip_reason(now)
-        self.assertIn("메타데이터가 없어 매매를 차단", reason)
+            for hour, minute in [(11, 12), (13, 5), (15, 20)]:
+                now = bot.KST.localize(datetime(2026, 10, 21, hour, minute))
+                self.assertIsNone(bot.scheduled_trade_skip_reason(now))
+            env["BOT_RUN_CREATED_AT"] = ""
+            env["BOT_RUN_STARTED_AT"] = ""
+            with patch.dict(os.environ, env):
+                self.assertIsNone(bot.scheduled_trade_skip_reason(now))
+            for hour, minute in [(8, 59), (15, 21), (19, 0)]:
+                now = bot.KST.localize(datetime(2026, 10, 21, hour, minute))
+                self.assertIn("시간 밖", bot.scheduled_trade_skip_reason(now))
+            saturday = bot.KST.localize(datetime(2026, 10, 24, 11, 0))
+            self.assertIn("시간 밖", bot.scheduled_trade_skip_reason(saturday))
 
     def test_report_only_schedule_bypasses_trading_delay_guard(self):
         now = bot.KST.localize(datetime(2026, 10, 21, 17, 56))
