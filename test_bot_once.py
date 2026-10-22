@@ -26,13 +26,17 @@ class BotSafetyTests(unittest.TestCase):
         start_date_patcher.start()
         self.addCleanup(start_date_patcher.stop)
         base = Path(self.tmp.name)
-        for name in ('BASE_DIR', 'DAY_STATE_FILE', 'SWING_STATE_FILE', 'BAA_STATE_FILE', 'TRADE_HISTORY_FILE', 'RISK_STATE_FILE'):
+        for name in ('BASE_DIR', 'DAY_STATE_FILE', 'SWING_STATE_FILE', 'BAA_STATE_FILE',
+                     'TRADE_HISTORY_FILE', 'RISK_STATE_FILE', 'SCHEDULE_STATE_FILE',
+                     'LOCK_FILE'):
             value = base if name == 'BASE_DIR' else base / {
                 'DAY_STATE_FILE': 'day_state.json',
                 'SWING_STATE_FILE': 'swing_state.json',
                 'BAA_STATE_FILE': 'baa_state.json',
                 'TRADE_HISTORY_FILE': 'trade_history.json',
                 'RISK_STATE_FILE': 'risk_state.json',
+                'SCHEDULE_STATE_FILE': 'schedule_state.json',
+                'LOCK_FILE': '.bot.lock',
             }[name]
             p = patch.object(bot, name, value)
             p.start()
@@ -52,6 +56,16 @@ class BotSafetyTests(unittest.TestCase):
              patch.object(bot, 'KIS_ENV', 'real'), patch.object(bot, 'KIS_APP_KEY', 'fake'), \
              patch.object(bot, 'KIS_APP_SECRET', 'fake'), patch.object(bot, 'KIS_CANO', '12345678'):
             with self.assertRaises(bot.TradeSafetyError):
+                bot.validate_environment()
+
+    def test_invalid_baa_mode_fails_closed(self):
+        with patch.object(bot, 'BAA_MODE', 'FORCE'), patch.object(bot, 'DRY_RUN', True), \
+             patch.object(bot, 'KIS_ENV', 'real'), \
+             patch.object(bot, 'KIS_URL', 'https://openapi.koreainvestment.com:9443'), \
+             patch.object(bot, 'KIS_APP_KEY', 'fake'), \
+             patch.object(bot, 'KIS_APP_SECRET', 'fake'), \
+             patch.object(bot, 'KIS_CANO', '12345678'):
+            with self.assertRaisesRegex(bot.TradeSafetyError, 'BAA_MODE'):
                 bot.validate_environment()
 
     def test_dry_run_never_posts_order_or_writes_intent(self):
@@ -78,7 +92,8 @@ class BotSafetyTests(unittest.TestCase):
         request.assert_not_called()
 
     def test_uncertain_post_outcome_keeps_intent_and_does_not_retry(self):
-        with patch.object(bot, 'DRY_RUN', False), patch.object(bot, 'order_window', return_value=True), \
+        with patch.object(bot, 'DRY_RUN', False), \
+             patch.object(bot, 'order_window', return_value=True), \
              patch.object(bot, 'is_market_open_today', return_value=True), \
              patch.object(bot, 'assert_no_pending'), patch.object(bot, 'check_daily_loss'), \
              patch.object(bot, 'get_current_price', return_value=1000), \
@@ -246,6 +261,7 @@ class FullCoverageTests(unittest.TestCase):
             'BAA_STATE_FILE': base / 'baa_state.json',
             'TRADE_HISTORY_FILE': base / 'trade_history.json',
             'RISK_STATE_FILE': base / 'risk_state.json',
+            'SCHEDULE_STATE_FILE': base / 'schedule_state.json',
             'HOLIDAY_CACHE_FILE': base / 'holiday_cache.json',
             'SECURE_TOKEN_FILE': base / 'token_cache.secure',
             'LOCK_FILE': base / '.bot.lock',
@@ -443,7 +459,8 @@ class FullCoverageTests(unittest.TestCase):
             return ({'output':{'ODNO':'00001234'}}, {})
         filled=[{'odno':'1234','pdno':'423160','ord_qty':'1',
                  'tot_ccld_qty':'1','tot_ccld_amt':'110800'}]
-        with patch.object(bot, 'DRY_RUN', False), patch.object(bot, 'order_window', return_value=True), \
+        with patch.object(bot, 'DRY_RUN', False), patch.object(bot, 'KIS_ENV', 'real'), \
+             patch.object(bot, 'order_window', return_value=True), \
              patch.object(bot, 'is_market_open_today', return_value=True), \
              patch.object(bot, 'assert_no_pending'), \
              patch.object(bot, 'get_account_balance', return_value=({'423160':{'qty':6}},300159,964929)), \
@@ -702,19 +719,84 @@ class StrategyAndIntegrationTests(unittest.TestCase):
         order.assert_not_called()
 
     def test_midday_report_requires_final_schedule_flag(self):
-        with self.fixed_time(14, 53), patch.object(bot, 'RUN_MIDDAY_REPORT', False), \
+        with self.fixed_time(15, 35), patch.object(bot, 'RUN_MIDDAY_REPORT', False), \
              patch.object(bot, 'FORCE_BAA', False), \
              patch.object(bot, 'select_baa_target') as choose:
             bot.handle_daily_closing_report('fake', {}, 964929)
         choose.assert_not_called()
         self.assertFalse(bot.load_json(bot.BAA_STATE_FILE, {}).get('last_report_date'))
 
+    def test_closing_report_waits_for_1535_slot(self):
+        with self.fixed_time(15, 34), patch.object(bot, 'RUN_MIDDAY_REPORT', True), \
+             patch.object(bot, 'RUN_REPORT_ONLY', True), patch.object(bot, 'FORCE_BAA', False), \
+             patch.object(bot, 'select_baa_target') as choose:
+            bot.handle_daily_closing_report('fake', {}, 964929)
+        choose.assert_not_called()
+        self.assertFalse(bot.load_json(bot.BAA_STATE_FILE, {}).get('last_report_date'))
+
     def test_closing_report_only_once_per_day(self):
-        with self.fixed_time(14,53),patch.object(bot,'RUN_MIDDAY_REPORT',True),patch.object(bot,'select_baa_target',return_value=('423160','KOFR',True,['test'],[100.]*252)) as choose:
+        with self.fixed_time(15, 35), patch.object(bot, 'RUN_MIDDAY_REPORT', True), \
+             patch.object(bot, 'RUN_REPORT_ONLY', True), \
+             patch.object(bot,'select_baa_target',return_value=('423160','KOFR',True,['test'],[100.]*252)) as choose:
             bot.handle_daily_closing_report('fake',{},964929)
             bot.handle_daily_closing_report('fake',{},964929)
         choose.assert_called_once()
         self.assertEqual(bot.load_json(bot.BAA_STATE_FILE,{})['last_report_date'],'2026-10-14')
+
+    def test_report_only_main_never_runs_order_strategies(self):
+        with self.fixed_time(15, 35), \
+             patch.dict(os.environ, {'GITHUB_EVENT_NAME': 'workflow_dispatch'}), \
+             patch.object(bot, 'KIS_APP_KEY', 'test'), \
+             patch.object(bot, 'KIS_APP_SECRET', 'test'), \
+             patch.object(bot, 'KIS_CANO', '12345678'), \
+             patch.object(bot, 'KIS_ENV', 'real'), \
+             patch.object(bot, 'KIS_URL', 'https://openapi.koreainvestment.com:9443'), \
+             patch.object(bot, 'DRY_RUN', True), \
+             patch.object(bot, 'RUN_REPORT_ONLY_RAW', 'Y'), \
+             patch.object(bot, 'RUN_REPORT_ONLY', True), \
+             patch.object(bot, 'RUN_MIDDAY_REPORT', True), \
+             patch.object(bot, 'get_access_token', return_value='fake'), \
+             patch.object(bot, 'is_market_open_today', return_value=True), \
+             patch.object(bot, 'assert_no_pending'), \
+             patch.object(bot, 'get_account_balance', return_value=({}, 100000, 200000)), \
+             patch.object(bot, 'handle_daily_closing_report') as report, \
+             patch.object(bot, 'run_swing') as swing, \
+             patch.object(bot, 'run_baa') as baa, \
+             patch.object(bot, 'execute_order') as order:
+            bot.main()
+        report.assert_called_once()
+        swing.assert_not_called()
+        baa.assert_not_called()
+        order.assert_not_called()
+
+    def test_late_scheduled_main_skips_all_trade_strategies(self):
+        env = {
+            'GITHUB_EVENT_NAME': 'schedule',
+            'BOT_SCHEDULE_CRON': '5 11 * * 1-5',
+            'BOT_SCHEDULE_SLOT_KST': '11:05',
+            'BOT_RUN_CREATED_AT': '2026-10-21T02:12:00Z',
+            'BOT_RUN_STARTED_AT': '2026-10-21T02:12:02Z',
+        }
+        with self.fixed_time(11, 12), patch.dict(os.environ, env), \
+             patch.object(bot, 'KIS_APP_KEY', 'test'), \
+             patch.object(bot, 'KIS_APP_SECRET', 'test'), \
+             patch.object(bot, 'KIS_CANO', '12345678'), \
+             patch.object(bot, 'KIS_ENV', 'real'), \
+             patch.object(bot, 'KIS_URL', 'https://openapi.koreainvestment.com:9443'), \
+             patch.object(bot, 'DRY_RUN', True), \
+             patch.object(bot, 'get_access_token', return_value='fake'), \
+             patch.object(bot, 'is_market_open_today', return_value=True), \
+             patch.object(bot, 'assert_no_pending') as reconcile, \
+             patch.object(bot, 'run_swing') as swing, \
+             patch.object(bot, 'run_baa') as baa, \
+             patch.object(bot, 'execute_order') as order, \
+             patch.object(bot, 'send_telegram') as telegram:
+            bot.main()
+        reconcile.assert_not_called()
+        swing.assert_not_called()
+        baa.assert_not_called()
+        order.assert_not_called()
+        self.assertTrue(telegram.call_args.kwargs['is_alert'])
 
     def test_main_drives_migration_first_then_trade_decisions(self):
         """Scenario with mocked broker data; simulate runner orchestration."""
@@ -724,6 +806,7 @@ class StrategyAndIntegrationTests(unittest.TestCase):
         with self.fixed_time(10,40),patch.object(bot,'KIS_APP_KEY','test'),\
              patch.object(bot,'KIS_APP_SECRET','test'),patch.object(bot,'KIS_CANO','12345678'),\
              patch.object(bot,'KIS_ENV','real'),patch.object(bot,'DRY_RUN',True),\
+             patch.object(bot,'KIS_URL','https://openapi.koreainvestment.com:9443'),\
              patch.object(bot,'get_access_token',return_value='fake'),\
              patch.object(bot,'is_market_open_today',return_value=True),\
              patch.object(bot,'get_account_balance',return_value=(holdings,300159,964929)),\

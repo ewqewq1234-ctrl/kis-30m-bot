@@ -3,18 +3,39 @@ name: KIS Bot Persistent State
 on:
   workflow_dispatch:
   schedule:
-    # Previous-day UTC Sunday-Thursday = Monday-Friday 08:52 KST.
-    - cron: '52 23 * * 0-4'
-    # Monday-Friday 09:00-13:50 KST, every 10 minutes.
-    - cron: '*/10 0-4 * * 1-5'
-    # Monday-Friday 14:00-14:50 KST, every 10 minutes.
-    - cron: '*/10 5 * * 1-5'
-    # Dedicated 14:53 KST settlement/report trigger.
-    - cron: '53 5 * * 1-5'
-    # Monday-Friday 15:00, 15:10, and 15:20 KST.
-    - cron: '0,10,20 6 * * 1-5'
+    # Local KST slots avoid UTC conversion and top-of-hour scheduling pressure.
+    - cron: '5 9 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '35 9 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '5 10 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '35 10 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '5 11 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '35 11 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '5 12 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '35 12 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '5 13 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '35 13 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '5 14 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '35 14 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '5 15 * * 1-5'
+      timezone: 'Asia/Seoul'
+    # Closing report is isolated from all order strategies.
+    - cron: '35 15 * * 1-5'
+      timezone: 'Asia/Seoul'
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -36,6 +57,10 @@ jobs:
       DRY_RUN: 'N'
       ENABLE_LIVE_ORDERS: 'YES'
       FORCE_BAA: 'N'
+      BAA_MODE: ATTACK
+      RUN_REPORT_ONLY: 'N'
+      RUN_MIDDAY_REPORT: 'N'
+      BOT_SCHEDULE_CRON: ${{ github.event.schedule || '' }}
       GITHUB_STATE_MODE: git
       BOT_STATE_DIR: ${{ github.workspace }}/persistent_state
 
@@ -43,6 +68,53 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: true
+
+      - name: Resolve scheduled slot
+        id: schedule
+        if: github.event_name == 'schedule'
+        shell: bash
+        env:
+          BOT_SCHEDULE_CRON: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+          case "$BOT_SCHEDULE_CRON" in
+            '5 9 * * 1-5') slot='09:05'; report_only='N' ;;
+            '35 9 * * 1-5') slot='09:35'; report_only='N' ;;
+            '5 10 * * 1-5') slot='10:05'; report_only='N' ;;
+            '35 10 * * 1-5') slot='10:35'; report_only='N' ;;
+            '5 11 * * 1-5') slot='11:05'; report_only='N' ;;
+            '35 11 * * 1-5') slot='11:35'; report_only='N' ;;
+            '5 12 * * 1-5') slot='12:05'; report_only='N' ;;
+            '35 12 * * 1-5') slot='12:35'; report_only='N' ;;
+            '5 13 * * 1-5') slot='13:05'; report_only='N' ;;
+            '35 13 * * 1-5') slot='13:35'; report_only='N' ;;
+            '5 14 * * 1-5') slot='14:05'; report_only='N' ;;
+            '35 14 * * 1-5') slot='14:35'; report_only='N' ;;
+            '5 15 * * 1-5') slot='15:05'; report_only='N' ;;
+            '35 15 * * 1-5') slot='15:35'; report_only='Y' ;;
+            *) echo "Unrecognized scheduled cron; refusing to start bot." >&2; exit 1 ;;
+          esac
+          printf 'kst_slot=%s\nreport_only=%s\n' "$slot" "$report_only" >> "$GITHUB_OUTPUT"
+
+      - name: Record trigger creation and runner start times
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          BOT_SCHEDULE_CRON: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+          created_at="$(gh api "repos/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}" --jq '.created_at')"
+          runner_started_at="$(gh api "repos/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}/jobs" --jq '[.jobs[] | select(.name == "trade") | .started_at] | first')"
+          if [[ -z "$created_at" || "$created_at" == "null" \
+                || -z "$runner_started_at" || "$runner_started_at" == "null" ]]; then
+            echo "Missing workflow creation/start timestamp; refusing to continue." >&2
+            exit 1
+          fi
+          printf 'BOT_RUN_CREATED_AT=%s\nBOT_RUN_STARTED_AT=%s\n' \
+            "$created_at" "$runner_started_at" >> "$GITHUB_ENV"
+          echo "Scheduled event: cron=$BOT_SCHEDULE_CRON run_id=$GH_RUN_ID created_at=$created_at runner_started_at=$runner_started_at"
 
       - name: Initialize or fetch persistent state branch
         shell: bash
@@ -75,8 +147,24 @@ jobs:
       - run: python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py test_swing_strategy.py
         env:
           GITHUB_STATE_MODE: 'off'
+          BOT_STATE_DIR: ${{ runner.temp }}/kis-offline-test-state
+          KIS_ENV: demo
+          KIS_URL: https://openapivts.koreainvestment.com:29443
+          KIS_APP_KEY: offline-fake-key
+          KIS_APP_SECRET: offline-fake-secret
+          KIS_CANO: '12345678'
+          TELEGRAM_BOT_TOKEN: ''
+          TELEGRAM_CHAT_ID: ''
+          DRY_RUN: 'Y'
+          ENABLE_LIVE_ORDERS: 'NO'
+          FORCE_BAA: 'N'
+          BAA_MODE: AUTO
+          RUN_REPORT_ONLY: 'N'
+          RUN_MIDDAY_REPORT: 'N'
 
       - name: Run bot (fail closed)
         env:
-          RUN_MIDDAY_REPORT: ${{ github.event_name == 'schedule' && (github.event.schedule == '*/10 5 * * 1-5' || github.event.schedule == '53 5 * * 1-5' || github.event.schedule == '0,10,20 6 * * 1-5') && 'Y' || 'N' }}
+          BOT_SCHEDULE_SLOT_KST: ${{ steps.schedule.outputs.kst_slot || '' }}
+          RUN_REPORT_ONLY: ${{ steps.schedule.outputs.report_only || 'N' }}
+          RUN_MIDDAY_REPORT: ${{ steps.schedule.outputs.report_only || 'N' }}
         run: python bot_once.py

@@ -4,8 +4,16 @@
 
 - The code defaults to disabled live execution. The production workflow is
   configured for `KIS_ENV=real`, `DRY_RUN=N`, `ENABLE_LIVE_ORDERS=YES`, and
-  `FORCE_BAA=N`; the execution-time guard blocks live orders before
-  2026-10-20 in Korea Standard Time.
+  `FORCE_BAA=N`. The one-time live-start date guard was `2026-10-20` and has
+  elapsed; it is not a current safeguard. Merging changes to the production
+  workflow can therefore activate real orders at its next scheduled run.
+- Production explicitly sets `BAA_MODE=ATTACK`. This evaluates and selects
+  only the existing `ATTACK_UNIVERSE`; Canary signals do not switch it to
+  `DEFENSE_UNIVERSE`. `AUTO` is the compatibility default for other invocations.
+  Invalid mode values fail closed. If no attack candidate passes its existing
+  trend filters, BAA records the skipped selection and reason, sends an alert,
+  and does not buy a defensive substitute or automatically liquidate existing
+  holdings.
 - KODEX 200 (`069500`) uses the separately identified SWING strategy; the
   former DAY intraday entry, fixed profit target, and mandatory intraday
   behavior are disabled. New entries are limited to one share and a 30% NAV
@@ -35,23 +43,43 @@
 - The aggressive BAA candidate set remains three ETFs, with `069500` excluded.
   The 80% target allocation, 13-day rebalance interval, momentum calculation,
   trend filters, defensive allocation, and 96% cash buffer remain unchanged.
+- With `BAA_MODE=ATTACK`, only `133690`, `122630`, and `381180` are evaluated
+  as BAA targets. Canary data/signals do not trigger defensive selection. No
+  eligible attack target or unusable required candidate data blocks new BAA
+  purchases; the skip reason is persisted in BAA state and alerted. `FORCE_BAA`
+  remains a dry-run diagnostic override and is not the operating-mode switch.
 - BAA uses a default target of 80% of total assets in an uptrend and retains
   the existing 50% reduction in a downtrend. Actual post-sale cash is checked
   before a follow-up purchase.
-- Weekday GitHub Actions schedules use UTC cron expressions. The afternoon
-  recurring schedules use 10-minute intervals and retain the dedicated
-  14:53 KST settlement/report event. They expand to 41 unique trigger times
-  per KST weekday, including 08:52 and ending at 15:20. A later run can recover
-  a missed settlement. Cron simplification does not guarantee punctual runs;
-  scheduled checks cannot provide real-time stop-loss monitoring.
+- Weekday trade checks run at 09:05, 09:35, and every 30 minutes through
+  15:05 KST (13 unique trade slots). A separate 15:35 KST report-only slot
+  skips both SWING and BAA trading code. GitHub's documented
+  [`timezone: Asia/Seoul` schedule setting](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+  is used directly; each slot has a unique cron and is mapped explicitly to
+  its KST time. The existing single
+  account concurrency group remains serialized with `cancel-in-progress: false`.
+- Each scheduled invocation logs its event, cron, KST slot, run ID, workflow
+  creation time, runner start time, and bot start time without logging secrets.
+  A trade run is skipped and alerts if it starts more than five minutes after
+  its expected slot, its timing metadata is missing/inconsistent, or it crosses
+  a KST date boundary. Order submissions also retain the independent market
+  hours/holiday guard (`09:00`–`15:20` KST). A report-only run never invokes
+  either strategy. A gap over 40 minutes is alerted when a later scheduled run
+  arrives; a completely dropped final trigger cannot alert itself and needs an
+  independent Actions monitor. GitHub may delay or drop cron events, so these
+  schedules do not guarantee punctual execution or real-time stop monitoring.
 
-| UTC cron | KST trigger |
-| --- | --- |
-| `52 23 * * 0-4` | Monday-Friday 08:52 (previous UTC day) |
-| `*/10 0-4 * * 1-5` | Monday-Friday 09:00-13:50, every 10 minutes |
-| `*/10 5 * * 1-5` | Monday-Friday 14:00-14:50, every 10 minutes |
-| `53 5 * * 1-5` | Monday-Friday 14:53 settlement/report |
-| `0,10,20 6 * * 1-5` | Monday-Friday 15:00, 15:10, 15:20 |
+| KST slot | Cron (`timezone: Asia/Seoul`) | Behavior |
+| --- | --- | --- |
+| 09:05 | `5 9 * * 1-5` | Trade check |
+| 09:35 | `35 9 * * 1-5` | Trade check |
+| 10:05, 10:35 | `5 10 * * 1-5`, `35 10 * * 1-5` | Trade checks |
+| 11:05, 11:35 | `5 11 * * 1-5`, `35 11 * * 1-5` | Trade checks; BAA window remains 11:00–11:25 |
+| 12:05, 12:35 | `5 12 * * 1-5`, `35 12 * * 1-5` | Trade checks |
+| 13:05, 13:35 | `5 13 * * 1-5`, `35 13 * * 1-5` | Trade checks |
+| 14:05, 14:35 | `5 14 * * 1-5`, `35 14 * * 1-5` | Trade checks |
+| 15:05 | `5 15 * * 1-5` | Last trade check; orders remain cut off at 15:20 |
+| 15:35 | `35 15 * * 1-5` | Report only; no strategy/order execution |
 
 ## KODEX 200 SWING (initial, unvalidated settings)
 
@@ -141,3 +169,7 @@ history GET requests plus OAuth token issuance only, blocks all order
 endpoints, uses temporary runner state, and reads only the encrypted KIS token
 cache from `bot-state` when available. It never reads or writes the persisted
 trading ledger or strategy state and never writes to `bot-state`.
+
+The trading workflow is live-capable and must not be manually dispatched for
+testing. Review its diff and offline checks, then obtain explicit approval
+before merging; merging can enable `BAA_MODE=ATTACK` and the schedule above.
