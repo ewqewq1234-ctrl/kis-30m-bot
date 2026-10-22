@@ -3,34 +3,15 @@ name: KIS Bot Persistent State
 on:
   workflow_dispatch:
   schedule:
-    # Local KST slots avoid UTC conversion and top-of-hour scheduling pressure.
-    - cron: '5 9 * * 1-5'
-      timezone: 'Asia/Seoul'
+    # Four market-session checks and one isolated closing report (KST weekdays).
     - cron: '35 9 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '5 10 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '35 10 * * 1-5'
       timezone: 'Asia/Seoul'
     - cron: '5 11 * * 1-5'
       timezone: 'Asia/Seoul'
-    - cron: '35 11 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '5 12 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '35 12 * * 1-5'
-      timezone: 'Asia/Seoul'
     - cron: '5 13 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '35 13 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '5 14 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '35 14 * * 1-5'
       timezone: 'Asia/Seoul'
     - cron: '5 15 * * 1-5'
       timezone: 'Asia/Seoul'
-    # Closing report is isolated from all order strategies.
     - cron: '35 15 * * 1-5'
       timezone: 'Asia/Seoul'
 
@@ -78,18 +59,9 @@ jobs:
         run: |
           set -euo pipefail
           case "$BOT_SCHEDULE_CRON" in
-            '5 9 * * 1-5') slot='09:05'; report_only='N' ;;
             '35 9 * * 1-5') slot='09:35'; report_only='N' ;;
-            '5 10 * * 1-5') slot='10:05'; report_only='N' ;;
-            '35 10 * * 1-5') slot='10:35'; report_only='N' ;;
             '5 11 * * 1-5') slot='11:05'; report_only='N' ;;
-            '35 11 * * 1-5') slot='11:35'; report_only='N' ;;
-            '5 12 * * 1-5') slot='12:05'; report_only='N' ;;
-            '35 12 * * 1-5') slot='12:35'; report_only='N' ;;
             '5 13 * * 1-5') slot='13:05'; report_only='N' ;;
-            '35 13 * * 1-5') slot='13:35'; report_only='N' ;;
-            '5 14 * * 1-5') slot='14:05'; report_only='N' ;;
-            '35 14 * * 1-5') slot='14:35'; report_only='N' ;;
             '5 15 * * 1-5') slot='15:05'; report_only='N' ;;
             '35 15 * * 1-5') slot='15:35'; report_only='Y' ;;
             *) echo "Unrecognized scheduled cron; refusing to start bot." >&2; exit 1 ;;

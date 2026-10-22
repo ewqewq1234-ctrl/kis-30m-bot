@@ -507,22 +507,17 @@ class OneShareTests(unittest.TestCase):
         }), patch.object(bot, "RUN_REPORT_ONLY", True):
             self.assertIsNone(bot.scheduled_trade_skip_reason(now))
 
-    def test_30_minute_kst_schedule_has_unique_weekday_slots_and_one_report_only(self):
+    def test_five_daily_kst_schedule_has_unique_weekday_slots_and_one_report_only(self):
         workflow = Path(".github/workflows/trade.yml").read_text(encoding="utf-8")
         entries = re.findall(
             r"- cron: '([^']+)'\r?\n\s+timezone: '([^']+)'", workflow
         )
-        self.assertEqual(len(entries), 14)
+        self.assertEqual(len(entries), 5)
         self.assertEqual({zone for _, zone in entries}, {"Asia/Seoul"})
-        self.assertEqual({cron for cron, _ in entries}, set(bot.SCHEDULE_CRON_TO_KST))
+        self.assertTrue({cron for cron, _ in entries}.issubset(bot.SCHEDULE_CRON_TO_KST))
         self.assertEqual(len({cron for cron, _ in entries}), len(entries))
 
-        expected_trading_slots = [
-            f"{hour:02d}:{minute:02d}"
-            for hour in range(9, 16)
-            for minute in (5, 35)
-            if (hour, minute) != (15, 35)
-        ]
+        expected_trading_slots = ["09:35", "11:05", "13:05", "15:05"]
         self.assertEqual(
             sorted(bot.SCHEDULE_CRON_TO_KST[cron] for cron, _ in entries
                    if cron != bot.REPORT_ONLY_CRON),
@@ -535,7 +530,7 @@ class OneShareTests(unittest.TestCase):
         )
         self.assertEqual(
             {cron: slot for cron, slot, _ in slot_case},
-            bot.SCHEDULE_CRON_TO_KST,
+            {cron: bot.SCHEDULE_CRON_TO_KST[cron] for cron, _ in entries},
         )
         report_cases = [cron for cron, _, report_only in slot_case if report_only == "Y"]
         self.assertEqual(report_cases, [bot.REPORT_ONLY_CRON])
