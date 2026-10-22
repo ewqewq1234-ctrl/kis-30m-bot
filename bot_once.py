@@ -64,7 +64,6 @@ ORDER_POLL_SECONDS = 3
 MAX_DAILY_LOSS_RATIO = float(os.getenv("MAX_DAILY_LOSS_RATIO", "0.02"))
 MARKET_START = "09:00"
 MARKET_END = "15:20"  # conservative KRX ordinary-order cut-off; check broker-specific schedule
-MAX_SCHEDULE_START_DELAY = timedelta(minutes=5)
 
 SCHEDULE_CRON_TO_KST = {
     f"5 {hour} * * 1-5": f"{hour:02d}:05" for hour in range(9, 16)
@@ -2037,44 +2036,18 @@ def _parse_workflow_timestamp(value, label):
 
 
 def scheduled_trade_skip_reason(now):
-    if os.getenv("GITHUB_EVENT_NAME") != "schedule" or RUN_REPORT_ONLY:
+    """Scheduling latency is diagnostic only; use the actual trading window."""
+    if RUN_REPORT_ONLY:
         return None
-    cron = os.getenv("BOT_SCHEDULE_CRON", "")
-    scheduled_slot = SCHEDULE_CRON_TO_KST.get(cron)
-    if cron == REPORT_ONLY_CRON:
-        return "보고 전용 cron에 RUN_REPORT_ONLY가 설정되지 않았습니다."
-    if not scheduled_slot or os.getenv("BOT_SCHEDULE_SLOT_KST") != scheduled_slot:
-        return "예약 cron/한국시간 슬롯 식별이 일치하지 않아 매매를 차단했습니다."
-    try:
-        created_at = _parse_workflow_timestamp(
-            os.getenv("BOT_RUN_CREATED_AT"), "workflow 생성 시각"
-        )
-        runner_started_at = _parse_workflow_timestamp(
-            os.getenv("BOT_RUN_STARTED_AT"), "runner 시작 시각"
-        )
-    except ValueError as exc:
-        return f"{exc}; 예약 실행 메타데이터가 없어 매매를 차단했습니다."
-
-    if created_at.date() != now.date() or runner_started_at.date() != now.date():
-        return "예약 실행이 한국시간 날짜 경계를 넘어 매매를 차단했습니다."
-    slot_time = datetime.strptime(scheduled_slot, "%H:%M").time()
-    expected_at = KST.localize(datetime.combine(created_at.date(), slot_time))
-    creation_delay = created_at - expected_at
-    runner_queue_delay = runner_started_at - created_at
-    bot_start_delay = now - runner_started_at
-    if creation_delay < timedelta(0):
-        return "workflow가 예정 슬롯보다 일찍 생성되어 매매를 차단했습니다."
-    if runner_queue_delay < timedelta(0) or bot_start_delay < timedelta(0):
-        return "workflow 시각 순서가 올바르지 않아 매매를 차단했습니다."
-    if creation_delay > MAX_SCHEDULE_START_DELAY:
-        return (f"예약 이벤트가 예정 슬롯보다 {int(creation_delay.total_seconds() // 60)}분 늦게 "
-                "생성되어 매매를 차단했습니다.")
-    if runner_queue_delay > MAX_SCHEDULE_START_DELAY:
-        return "runner 대기시간이 5분을 넘어 매매를 차단했습니다."
-    if bot_start_delay > MAX_SCHEDULE_START_DELAY:
-        return "봇 시작 준비가 5분을 넘어 매매를 차단했습니다."
-    if now - expected_at > MAX_SCHEDULE_START_DELAY:
-        return "예약 슬롯에서 봇 시작까지 5분을 넘어 매매를 차단했습니다."
+    if now.weekday() >= 5 or not (MARKET_START <= now.strftime("%H:%M") <= MARKET_END):
+        return "실제 실행 시각이 매매 가능 시간 밖이므로 매매를 차단했습니다."
+    if os.getenv("GITHUB_EVENT_NAME") == "schedule":
+        cron = os.getenv("BOT_SCHEDULE_CRON", "")
+        if cron == REPORT_ONLY_CRON:
+            return "보고 전용 cron에 RUN_REPORT_ONLY가 설정되지 않았습니다."
+        slot = SCHEDULE_CRON_TO_KST.get(cron)
+        if not slot or os.getenv("BOT_SCHEDULE_SLOT_KST") != slot:
+            return "예약 cron/한국시간 슬롯 식별이 일치하지 않아 매매를 차단했습니다."
     return None
 
 
