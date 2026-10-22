@@ -56,11 +56,24 @@ DRY_RUN = os.getenv("DRY_RUN", "Y").upper() != "N"
 ENABLE_LIVE_ORDERS = os.getenv("ENABLE_LIVE_ORDERS", "NO") == "YES"
 FORCE_BAA = os.getenv("FORCE_BAA", "N").upper() == "Y"
 RUN_MIDDAY_REPORT = os.getenv("RUN_MIDDAY_REPORT", "N").upper() == "Y"
+RUN_REPORT_ONLY_RAW = os.getenv("RUN_REPORT_ONLY", "N").strip().upper()
+RUN_REPORT_ONLY = RUN_REPORT_ONLY_RAW == "Y"
+BAA_MODE = os.getenv("BAA_MODE", "AUTO").strip().upper()
 # FORCE_BAA is diagnostic only. It never bypasses market or live-order guards.
 ORDER_POLL_SECONDS = 3
 MAX_DAILY_LOSS_RATIO = float(os.getenv("MAX_DAILY_LOSS_RATIO", "0.02"))
 MARKET_START = "09:00"
 MARKET_END = "15:20"  # conservative KRX ordinary-order cut-off; check broker-specific schedule
+MAX_SCHEDULE_START_DELAY = timedelta(minutes=5)
+
+SCHEDULE_CRON_TO_KST = {
+    f"5 {hour} * * 1-5": f"{hour:02d}:05" for hour in range(9, 16)
+}
+SCHEDULE_CRON_TO_KST.update({
+    f"35 {hour} * * 1-5": f"{hour:02d}:35" for hour in range(9, 15)
+})
+REPORT_ONLY_CRON = "35 15 * * 1-5"
+SCHEDULE_CRON_TO_KST[REPORT_ONLY_CRON] = "15:35"
 
 CODE_BULL = "069500"
 SWING_BUDGET_RATIO = 0.30
@@ -90,7 +103,9 @@ ACCOUNT_ORDER_ATTEMPTS = 0
 
 
 class TradeSafetyError(RuntimeError):
-    pass
+    def __init__(self, message, *, notified=False):
+        super().__init__(message)
+        self.notified = notified
 
 
 def now_kst():
@@ -204,7 +219,7 @@ def save_json(filepath, data):
 def fail(message):
     print(f">> 🚨 [안전 중단] {message}")
     send_telegram(html.escape(message), is_alert=True)
-    raise TradeSafetyError(message)
+    raise TradeSafetyError(message, notified=True)
 
 
 def validate_environment():
@@ -223,6 +238,12 @@ def validate_environment():
         fail("실거래는 KIS_ENV=real, DRY_RUN=N, ENABLE_LIVE_ORDERS=YES 모두 필요")
     if FORCE_BAA and not DRY_RUN:
         fail("FORCE_BAA는 DRY_RUN=Y 진단에서만 허용합니다.")
+    if BAA_MODE not in {"AUTO", "ATTACK"}:
+        fail("BAA_MODE는 AUTO 또는 ATTACK이어야 합니다.")
+    if RUN_REPORT_ONLY_RAW not in {"Y", "N"}:
+        fail("RUN_REPORT_ONLY는 Y 또는 N이어야 합니다.")
+    if RUN_REPORT_ONLY and not RUN_MIDDAY_REPORT:
+        fail("RUN_REPORT_ONLY=Y에는 RUN_MIDDAY_REPORT=Y가 필요합니다.")
     if not (0 < MAX_DAILY_LOSS_RATIO < 1):
         fail("MAX_DAILY_LOSS_RATIO는 0과 1 사이여야 합니다")
 
@@ -1739,31 +1760,54 @@ def run_swing(token: str, holdings: dict, deposit: int, total_asset: int):
 # 6. 공격형 BAA 전략 및 장 마감 일일 결산 리포트
 # ==============================================================================
 def select_baa_target(token):
+    if BAA_MODE not in {"AUTO", "ATTACK"}:
+        fail("BAA_MODE는 AUTO 또는 ATTACK이어야 합니다.")
     canary_logs = []
     daily_cache = {}
+
     def closes(code):
         if code not in daily_cache:
             daily_cache[code] = get_daily_closes(token, code)
         return daily_cache[code]
+
     is_defense = False
-    for code, name in CANARY_UNIVERSE.items():
-        score = calc_fast_baa(closes(code))
-        canary_logs.append(f"{name}: {score:.2f}")
-        print(f"   • {name} ({code}) [수집: {len(closes(code))}일]: 스코어 {score:.2f}")
-        if score <= 0:
-            is_defense = True
+    if BAA_MODE == "AUTO":
+        for code, name in CANARY_UNIVERSE.items():
+            prices = closes(code)
+            score = calc_fast_baa(prices)
+            canary_logs.append(f"{name}: {score:.2f}")
+            print(f"   • {name} ({code}) [수집: {len(prices)}일]: 스코어 {score:.2f}")
+            if score <= 0:
+                is_defense = True
+    else:
+        print(">> [BAA 모드] ATTACK: 카나리아 방어 신호와 무관하게 공격 유니버스만 평가합니다.")
+
     scores = {}
-    if not is_defense:
-        for code in ATTACK_UNIVERSE:
+    if BAA_MODE == "ATTACK" or not is_defense:
+        for code, name in ATTACK_UNIVERSE.items():
             prices = closes(code)
             score = calc_fast_baa(prices)
             ma60 = sum(prices[-60:]) / 60
             ma200 = sum(prices[-200:]) / 200
             if prices[-1] >= ma60 and prices[-1] >= ma200:
                 scores[code] = score
+                print(f"   • {name} ({code}) 공격 적격: 스코어 {score:.2f}")
+            else:
+                failed_filters = []
+                if prices[-1] < ma60:
+                    failed_filters.append("MA60")
+                if prices[-1] < ma200:
+                    failed_filters.append("MA200")
+                print(f"   • {name} ({code}) 신규매수 제외: {', '.join(failed_filters)} 추세 미충족")
         if not scores:
+            if BAA_MODE == "ATTACK":
+                canary_logs.append(
+                    "공격 후보 중 MA60/MA200 추세 조건을 충족한 종목이 없습니다."
+                )
+                print(f">> [BAA 신규매수 생략] {canary_logs[-1]}")
+                return None, None, False, canary_logs, []
             is_defense = True
-    if is_defense:
+    if is_defense and BAA_MODE == "AUTO":
         scores = {code: calc_fast_baa(closes(code)) for code in DEFENSE_UNIVERSE}
     target = max(scores, key=scores.get)
     if not is_defense and target == CODE_BULL:
@@ -1776,14 +1820,17 @@ def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
     now = now_kst()
     if not (RUN_MIDDAY_REPORT or FORCE_BAA):
         return
-    if not FORCE_BAA and now.strftime("%H:%M") < "14:53":
+    if not FORCE_BAA and now.strftime("%H:%M") < "15:35":
         return
     state = load_json(BAA_STATE_FILE, {})
     if state.get("last_report_date") == now.strftime("%Y-%m-%d") and not FORCE_BAA:
         return
-    recovered = not FORCE_BAA and now.strftime("%H:%M") > "14:53"
-    print(">> [중간 결산] 14:53 결산 예약의 장중 카나리아·BAA 잠정 리포트를 생성합니다.")
+    recovered = not FORCE_BAA and now.strftime("%H:%M") > "15:35"
+    print(">> [장 마감 결산] 카나리아·BAA 최종 리포트를 생성합니다.")
     code, name, is_defense, logs, _ = select_baa_target(token)
+    target_label = (f"{name} ({code})" if code else "공격 적격 종목 없음 (신규매수 생략)")
+    canary_summary = (", ".join(logs) if BAA_MODE == "AUTO"
+                      else "ATTACK 고정 모드: 카나리아 방어 신호로 전환하지 않음")
     swing = load_json(SWING_STATE_FILE, default_swing_state())
     swing_status = (f"수량 {number(swing.get('owned_qty'))}주 / 확인 체결가 "
                     f"{number(swing.get('verified_entry_price')):,}원 / "
@@ -1806,10 +1853,10 @@ def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
         if order.get("strategy") == "SWING"
         and order.get("status") in {"INTENT", "UNCERTAIN", "ACCEPTED", "PARTIAL", "UNKNOWN"}
     ]
-    msg = (f"📋 <b>[장중 중간 결산(잠정) - {'지연 복구' if recovered else '14:53 예약'}]</b>\n📅 날짜: {now:%Y-%m-%d} / 실제 조회: {now:%H:%M} KST\n"
+    msg = (f"📋 <b>[장 마감 결산 - {'지연 복구' if recovered else '15:35 예약'}]</b>\n📅 날짜: {now:%Y-%m-%d} / 실제 조회: {now:%H:%M} KST\n"
            f"━━━━━━━━━━━━━━━━━━━━\n• 운용 모드: {'🛡️ 수비 모드' if is_defense else '🚀 공격 모드'}\n"
-           f"• 선정 타깃: <b>{html.escape(name)} ({code})</b>\n"
-           f"• 카나리아 점검: {html.escape(', '.join(logs))}\n"
+           f"• 선정 타깃: <b>{html.escape(target_label)}</b>\n"
+           f"• 카나리아 점검: {html.escape(canary_summary)}\n"
            f"• 총 평가 자산: {total_asset:,.0f}원\n"
            f"• SWING(KODEX 200): {html.escape(swing_status)}\n"
            f"• {html.escape(swing_levels)}\n"
@@ -1817,12 +1864,12 @@ def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
            f"• {html.escape(swing_exit)}\n"
            f"• 데이터 신선도: {html.escape(swing_data)}\n"
            f"• 미확정 SWING 주문: {html.escape(', '.join(pending_swing) if pending_swing else '없음')}\n"
-           f"• 현재 실행 시각: {now:%H:%M:%S} KST; 종가 확정 전 잠정 보고\n━━━━━━━━━━━━━━━━━━━━")
+           f"• 현재 실행 시각: {now:%H:%M:%S} KST; 보고 전용 실행\n━━━━━━━━━━━━━━━━━━━━")
     send_telegram(msg, is_alert=recovered)
     if not FORCE_BAA:
         state["last_report_date"] = now.strftime("%Y-%m-%d")
         save_json(BAA_STATE_FILE, state)
-    print(">> ✅ 장중 중간 결산 리포트 전송 시도 완료.")
+    print(">> ✅ 장 마감 결산 리포트 전송 시도 완료.")
 
 
 def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_run: bool = False):
@@ -1840,8 +1887,46 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
         if days_passed < 13:
             print(f">> [BAA 대기] 최근 리밸런싱일로부터 {days_passed}일 경과 (최소 13일 필요).")
             return
-    print(">> [1단계: 4대 카나리아 모멘텀 점검]")
-    code, name, is_defense, canary_logs, target_closes = select_baa_target(token)
+    print(">> [1단계: BAA 타깃 점검]")
+    try:
+        code, name, is_defense, selection_logs, target_closes = select_baa_target(token)
+    except TradeSafetyError as exc:
+        reason = f"후보 데이터/선정 오류: {exc}"
+        state.update({
+            "last_skip_date": now.strftime("%Y-%m-%d"),
+            "last_skip_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "last_skip_mode": BAA_MODE,
+            "last_skip_reason": reason,
+        })
+        save_json(BAA_STATE_FILE, state)
+        print(f">> [BAA 신규매수 생략] {reason}")
+        if not exc.notified:
+            send_telegram(
+                f"⚠️ <b>[BAA 신규매수 생략]</b>\n운용 모드: {html.escape(BAA_MODE)}\n"
+                f"사유: {html.escape(reason)}\n기존 보유는 자동 청산하지 않았습니다.",
+                is_alert=True,
+            )
+        raise
+    if code is None:
+        reason = "; ".join(selection_logs) or "공격 적격 종목 없음"
+        state.update({
+            "last_skip_date": now.strftime("%Y-%m-%d"),
+            "last_skip_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "last_skip_mode": BAA_MODE,
+            "last_skip_reason": reason,
+        })
+        save_json(BAA_STATE_FILE, state)
+        print(f">> [BAA 신규매수 생략] {reason}")
+        send_telegram(
+            f"⚠️ <b>[BAA 신규매수 생략]</b>\n운용 모드: {html.escape(BAA_MODE)}\n"
+            f"사유: {html.escape(reason)}\n기존 보유는 자동 청산하지 않았습니다.",
+            is_alert=True,
+        )
+        return
+    state["last_skip_date"] = None
+    state["last_skip_at"] = None
+    state["last_skip_mode"] = None
+    state["last_skip_reason"] = None
     print(f">> [2단계] {'수비' if is_defense else '공격'} 타깃 선정: {name} ({code})")
     curr_target_price = get_current_price(token, code)
     sma20 = sum(target_closes[-20:]) / 20
@@ -1927,11 +2012,11 @@ def monitor_scheduled_execution():
             fail(f"예약 실행 추적 상태 형식 오류: {exc}")
         current_minutes = now.hour * 60 + now.minute
         previous_minutes = previous_at.hour * 60 + previous_at.minute
-        afternoon_start, afternoon_end = 14 * 60, 15 * 60 + 20
+        schedule_start, schedule_end = 9 * 60 + 5, 15 * 60 + 35
         if (previous_at.date() == now.date()
-                and afternoon_start <= previous_minutes <= afternoon_end
-                and afternoon_start <= current_minutes <= afternoon_end
-                and now - previous_at >= timedelta(minutes=10)):
+                and schedule_start <= previous_minutes <= schedule_end
+                and schedule_start <= current_minutes <= schedule_end
+                and now - previous_at > timedelta(minutes=40)):
             gap_minutes = int((now - previous_at).total_seconds() // 60)
             send_telegram(
                 f"예약 실행 지연/누락 감지: 직전 KST 실행 {previous_at:%H:%M}, "
@@ -1940,6 +2025,71 @@ def monitor_scheduled_execution():
             )
     state["last_scheduled_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
     save_json(SCHEDULE_STATE_FILE, state)
+
+
+def _parse_workflow_timestamp(value, label):
+    if not value:
+        raise ValueError(f"{label} 누락")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"{label} 시간대 누락")
+    return parsed.astimezone(KST)
+
+
+def scheduled_trade_skip_reason(now):
+    if os.getenv("GITHUB_EVENT_NAME") != "schedule" or RUN_REPORT_ONLY:
+        return None
+    cron = os.getenv("BOT_SCHEDULE_CRON", "")
+    scheduled_slot = SCHEDULE_CRON_TO_KST.get(cron)
+    if cron == REPORT_ONLY_CRON:
+        return "보고 전용 cron에 RUN_REPORT_ONLY가 설정되지 않았습니다."
+    if not scheduled_slot or os.getenv("BOT_SCHEDULE_SLOT_KST") != scheduled_slot:
+        return "예약 cron/한국시간 슬롯 식별이 일치하지 않아 매매를 차단했습니다."
+    try:
+        created_at = _parse_workflow_timestamp(
+            os.getenv("BOT_RUN_CREATED_AT"), "workflow 생성 시각"
+        )
+        runner_started_at = _parse_workflow_timestamp(
+            os.getenv("BOT_RUN_STARTED_AT"), "runner 시작 시각"
+        )
+    except ValueError as exc:
+        return f"{exc}; 예약 실행 메타데이터가 없어 매매를 차단했습니다."
+
+    if created_at.date() != now.date() or runner_started_at.date() != now.date():
+        return "예약 실행이 한국시간 날짜 경계를 넘어 매매를 차단했습니다."
+    slot_time = datetime.strptime(scheduled_slot, "%H:%M").time()
+    expected_at = KST.localize(datetime.combine(created_at.date(), slot_time))
+    creation_delay = created_at - expected_at
+    runner_queue_delay = runner_started_at - created_at
+    bot_start_delay = now - runner_started_at
+    if creation_delay < timedelta(0):
+        return "workflow가 예정 슬롯보다 일찍 생성되어 매매를 차단했습니다."
+    if runner_queue_delay < timedelta(0) or bot_start_delay < timedelta(0):
+        return "workflow 시각 순서가 올바르지 않아 매매를 차단했습니다."
+    if creation_delay > MAX_SCHEDULE_START_DELAY:
+        return (f"예약 이벤트가 예정 슬롯보다 {int(creation_delay.total_seconds() // 60)}분 늦게 "
+                "생성되어 매매를 차단했습니다.")
+    if runner_queue_delay > MAX_SCHEDULE_START_DELAY:
+        return "runner 대기시간이 5분을 넘어 매매를 차단했습니다."
+    if bot_start_delay > MAX_SCHEDULE_START_DELAY:
+        return "봇 시작 준비가 5분을 넘어 매매를 차단했습니다."
+    if now - expected_at > MAX_SCHEDULE_START_DELAY:
+        return "예약 슬롯에서 봇 시작까지 5분을 넘어 매매를 차단했습니다."
+    return None
+
+
+def log_invocation_context(now):
+    event_name = os.getenv("GITHUB_EVENT_NAME", "local")
+    print(
+        ">> 실행 출처: "
+        f"event={event_name} schedule={os.getenv('BOT_SCHEDULE_CRON', 'n/a') or 'n/a'} "
+        f"slot_kst={os.getenv('BOT_SCHEDULE_SLOT_KST', 'n/a') or 'n/a'} "
+        f"run_id={os.getenv('GITHUB_RUN_ID', 'local')} "
+        f"run_number={os.getenv('GITHUB_RUN_NUMBER', 'n/a')} "
+        f"created_at={os.getenv('BOT_RUN_CREATED_AT', 'n/a')} "
+        f"runner_started_at={os.getenv('BOT_RUN_STARTED_AT', 'n/a')} "
+        f"bot_started_at_kst={now:%Y-%m-%d %H:%M:%S}"
+    )
 
 
 # ==============================================================================
@@ -1952,6 +2102,8 @@ def main():
     print("==================================================")
     validate_environment()
     print(f">> 모드: {'DRY_RUN 주문 차단' if DRY_RUN else '실전 주문 허용'} / KIS_ENV={KIS_ENV}")
+    print(f">> BAA_MODE={BAA_MODE} / report_only={'Y' if RUN_REPORT_ONLY else 'N'}")
+    log_invocation_context(now)
     if os.getenv("GITHUB_EVENT_NAME") == "schedule":
         monitor_scheduled_execution()
     with LOCK_FILE.open("a+") as file_lock:
@@ -1963,9 +2115,24 @@ def main():
         if not is_market_open_today(token):
             print(f">> 🏖️ 오늘({now:%Y-%m-%d})은 한국거래소 휴장일입니다.")
             return
+        if RUN_REPORT_ONLY and not RUN_MIDDAY_REPORT:
+            fail("보고 전용 실행에 RUN_MIDDAY_REPORT=Y가 없습니다.")
+        if not RUN_REPORT_ONLY:
+            late_reason = scheduled_trade_skip_reason(now_kst())
+            if late_reason:
+                print(f">> [예약 매매 차단] {late_reason}")
+                send_telegram(
+                    f"⚠️ <b>[예약 매매 차단]</b>\n{html.escape(late_reason)}",
+                    is_alert=True,
+                )
+                return
         # Reconcile before any trading decisions; never silently swallow a safety exception.
         assert_no_pending(token)
         holdings, deposit, tot_eval = get_account_balance(token)
+        if RUN_REPORT_ONLY:
+            handle_daily_closing_report(token, holdings, tot_eval)
+            print("\n>> 🏁 보고 전용 실행이 완료되었습니다 (매매 전략 미실행).")
+            return
         risk = load_json(RISK_STATE_FILE, {})
         today = now_kst().strftime("%Y-%m-%d")
         if risk.get("date") != today:

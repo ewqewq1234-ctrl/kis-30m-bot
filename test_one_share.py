@@ -1,8 +1,9 @@
 """Offline KODEX 200 cap and BAA allocation safety regressions."""
+import os
 import re
 import unittest
 from contextlib import ExitStack
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,6 +60,12 @@ class OneShareTests(unittest.TestCase):
                 with self.assertRaises(bot.TradeSafetyError):
                     self.attempt(actual, owned, qty)
         self.assertEqual(self.attempt(), (False, 0))
+
+    def test_069500_day_order_is_rejected_without_post(self):
+        with patch.object(bot, "api_request") as request:
+            with self.assertRaisesRegex(bot.TradeSafetyError, "잘못된 주문 방향/전략"):
+                bot.execute_order("fake", "069500", 1, strategy="DAY")
+        request.assert_not_called()
 
     def test_baa_and_legacy_day_conflicts_block_buys(self):
         for kwargs in [{"strategy": "BAA"}, {"strategy": "DAY"}, {"baa": True}]:
@@ -191,6 +198,87 @@ class OneShareTests(unittest.TestCase):
         self.assertEqual(target, "381180")
         self.assertEqual(len(logs), 4)
         self.assertTrue(set(bot.CANARY_UNIVERSE).issubset(requested))
+
+    def test_attack_mode_ignores_canary_signal_and_never_reads_defensive_universe(self):
+        requested = []
+
+        def daily_closes(token, code, target_count=252):
+            requested.append(code)
+            if code in bot.CANARY_UNIVERSE:
+                return [100.0] * 251 + [1.0]
+            slope = {"133690": 1, "122630": 2, "381180": 3}[code]
+            return [100.0 + slope * index for index in range(252)]
+
+        with patch.object(bot, "BAA_MODE", "ATTACK"), \
+             patch.object(bot, "get_daily_closes", side_effect=daily_closes):
+            target, _, defensive, _, _ = bot.select_baa_target("fake")
+        self.assertFalse(defensive)
+        self.assertEqual(target, "381180")
+        self.assertEqual(set(requested), set(bot.ATTACK_UNIVERSE))
+        self.assertTrue(set(bot.ATTACK_UNIVERSE).isdisjoint(bot.DEFENSE_UNIVERSE))
+        self.assertNotIn("069500", requested)
+
+    def test_attack_mode_without_eligible_candidate_does_not_fall_back_to_defense(self):
+        requested = []
+
+        def daily_closes(token, code, target_count=252):
+            requested.append(code)
+            return [300.0 - index for index in range(252)]
+
+        with patch.object(bot, "BAA_MODE", "ATTACK"), \
+             patch.object(bot, "get_daily_closes", side_effect=daily_closes):
+            target, name, defensive, logs, _ = bot.select_baa_target("fake")
+        self.assertIsNone(target)
+        self.assertIsNone(name)
+        self.assertFalse(defensive)
+        self.assertEqual(set(requested), set(bot.ATTACK_UNIVERSE))
+        self.assertTrue(any("조건을 충족한 종목이 없습니다" in item for item in logs))
+
+    def test_attack_mode_no_candidate_records_alert_and_preserves_existing_position(self):
+        self.write("baa_state.json", {
+            "target_code": "133690", "owned_qty": 1,
+            "last_executed_date": "2026-10-01",
+        })
+        with patch.object(
+            bot, "now_kst",
+            return_value=bot.KST.localize(datetime(2026, 10, 21, 11, 5)),
+        ), patch.object(bot, "BAA_MODE", "ATTACK"), \
+             patch.object(bot, "select_baa_target", return_value=(
+                 None, None, False, ["공격 적격 종목 없음"], [],
+             )), patch.object(bot, "get_current_price") as quote, \
+             patch.object(bot, "execute_order") as order, \
+             patch.object(bot, "send_telegram") as telegram:
+            bot.run_baa("fake", {"133690": {"qty": 1}}, 100000, 200000)
+        state = bot.load_json(bot.BAA_STATE_FILE, {})
+        self.assertEqual(state["target_code"], "133690")
+        self.assertEqual(state["owned_qty"], 1)
+        self.assertEqual(state["last_executed_date"], "2026-10-01")
+        self.assertEqual(state["last_skip_date"], "2026-10-21")
+        self.assertEqual(state["last_skip_mode"], "ATTACK")
+        self.assertIn("공격 적격 종목 없음", state["last_skip_reason"])
+        quote.assert_not_called()
+        order.assert_not_called()
+        telegram.assert_called_once()
+        self.assertTrue(telegram.call_args.kwargs["is_alert"])
+
+    def test_attack_mode_invalid_candidate_data_is_recorded_and_alerted(self):
+        with patch.object(
+            bot, "now_kst",
+            return_value=bot.KST.localize(datetime(2026, 10, 21, 11, 5)),
+        ), patch.object(bot, "BAA_MODE", "ATTACK"), \
+             patch.object(
+                 bot, "select_baa_target",
+                 side_effect=bot.TradeSafetyError("공격 후보 일봉 데이터 오류"),
+             ), patch.object(bot, "execute_order") as order, \
+             patch.object(bot, "send_telegram") as telegram:
+            with self.assertRaisesRegex(bot.TradeSafetyError, "일봉 데이터 오류"):
+                bot.run_baa("fake", {}, 100000, 200000)
+        state = bot.load_json(bot.BAA_STATE_FILE, {})
+        self.assertEqual(state["last_skip_mode"], "ATTACK")
+        self.assertIn("공격 후보 일봉 데이터 오류", state["last_skip_reason"])
+        order.assert_not_called()
+        telegram.assert_called_once()
+        self.assertTrue(telegram.call_args.kwargs["is_alert"])
 
     def test_one_nonpositive_canary_switches_to_defensive_baa(self):
         def daily_closes(token, code, target_count=252):
@@ -357,8 +445,9 @@ class OneShareTests(unittest.TestCase):
         self.assertEqual(order.call_args.args[3], "01")
 
     def test_late_report_recovers_a_missed_1453_settlement(self):
-        with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 15, 0))), \
+        with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 15, 40))), \
              patch.object(bot, "RUN_MIDDAY_REPORT", True), \
+             patch.object(bot, "RUN_REPORT_ONLY", True), \
              patch.object(bot, "FORCE_BAA", False), \
              patch.object(bot, "select_baa_target", return_value=("423160", "KOFR", True, [], [])), \
              patch.object(bot, "send_telegram") as telegram:
@@ -368,67 +457,103 @@ class OneShareTests(unittest.TestCase):
 
     def test_missed_afternoon_schedule_gap_alerts(self):
         with patch.object(bot, "now_kst", side_effect=[
-            bot.KST.localize(datetime(2026, 10, 16, 14, 0)),
-            bot.KST.localize(datetime(2026, 10, 16, 14, 12)),
+            bot.KST.localize(datetime(2026, 10, 16, 14, 5)),
+            bot.KST.localize(datetime(2026, 10, 16, 14, 46)),
         ]), patch.object(bot, "send_telegram") as telegram:
             bot.monitor_scheduled_execution()
             bot.monitor_scheduled_execution()
         telegram.assert_called_once()
         self.assertTrue(telegram.call_args.kwargs["is_alert"])
 
-    def test_ten_minute_schedule_has_41_unique_weekday_triggers(self):
-        workflow = Path(".github/workflows/trade.yml").read_text(encoding="utf-8")
-        expected = {
-            "52 23 * * 0-4", "*/10 0-4 * * 1-5", "*/10 5 * * 1-5",
-            "53 5 * * 1-5", "0,10,20 6 * * 1-5",
+    def test_regular_schedule_spacing_does_not_alert_as_a_missed_run(self):
+        with patch.object(bot, "now_kst", side_effect=[
+            bot.KST.localize(datetime(2026, 10, 16, 14, 5)),
+            bot.KST.localize(datetime(2026, 10, 16, 14, 35)),
+        ]), patch.object(bot, "send_telegram") as telegram:
+            bot.monitor_scheduled_execution()
+            bot.monitor_scheduled_execution()
+        telegram.assert_not_called()
+
+    def test_scheduled_trade_guard_rejects_late_and_unidentified_runs(self):
+        now = bot.KST.localize(datetime(2026, 10, 21, 11, 12))
+        env = {
+            "GITHUB_EVENT_NAME": "schedule",
+            "BOT_SCHEDULE_CRON": "5 11 * * 1-5",
+            "BOT_SCHEDULE_SLOT_KST": "11:05",
+            "BOT_RUN_CREATED_AT": "2026-10-21T02:12:00Z",
+            "BOT_RUN_STARTED_AT": "2026-10-21T02:12:00Z",
         }
-        actual = set(re.findall(r"cron: '([^']+)'", workflow))
-        self.assertEqual(actual, expected)
-        start = datetime(2026, 10, 18)  # Sunday in UTC.
-        utc_runs = []
-        for offset in range(7):
-            day = start + timedelta(days=offset)
-            cron_day = (day.weekday() + 1) % 7
-            for expression in expected:
-                minute_field, hour_field, _, _, day_field = expression.split()
-                cron_days = set(range(0, 5)) if day_field == "0-4" else set(range(1, 6))
-                if cron_day not in cron_days:
-                    continue
-                hours = set(range(0, 5)) if hour_field == "0-4" else {int(hour_field)}
-                for hour in hours:
-                    if minute_field == "*/10":
-                        minutes = range(0, 60, 10)
-                    else:
-                        minutes = [int(value) for value in minute_field.split(",")]
-                    utc_runs.extend(day.replace(hour=hour, minute=minute) for minute in minutes)
-        kst_runs = [run.replace(tzinfo=timezone.utc).astimezone(bot.KST) for run in utc_runs]
-        per_day = {}
-        for run in kst_runs:
-            if run.weekday() < 5:
-                per_day.setdefault(run.date(), []).append(run.strftime("%H:%M"))
-            else:
-                self.fail(f"Unexpected KST weekend trigger: {run}")
-        weekday_slots = [sorted(times) for day, times in per_day.items() if day.weekday() < 5]
-        self.assertEqual(len(weekday_slots), 5)
-        for times in weekday_slots:
-            self.assertEqual(len(times), 41)
-            self.assertEqual(len(times), len(set(times)))
-            self.assertEqual(times[0], "08:52")
-            self.assertEqual(times[-1], "15:20")
-            expected_local = {"08:52", "14:53", "15:00", "15:10", "15:20"}
-            expected_local.update(
-                f"{hour:02d}:{minute:02d}"
-                for hour in range(9, 14) for minute in range(0, 60, 10)
-            )
-            expected_local.update(f"14:{minute:02d}" for minute in range(0, 60, 10))
-            self.assertEqual(set(times), expected_local)
-        expression = re.search(r"RUN_MIDDAY_REPORT: (.+)", workflow).group(1)
-        report_crons = set(re.findall(r"github\.event\.schedule == '([^']+)'", expression))
-        self.assertEqual(report_crons, {
-            "*/10 5 * * 1-5", "53 5 * * 1-5", "0,10,20 6 * * 1-5",
-        })
-        self.assertIn("github.event_name == 'schedule' &&", expression)
+        with patch.dict(os.environ, env), patch.object(bot, "RUN_REPORT_ONLY", False):
+            reason = bot.scheduled_trade_skip_reason(now)
+        self.assertIn("늦게 생성", reason)
+
+        env["BOT_RUN_CREATED_AT"] = "2026-10-21T02:05:00Z"
+        env["BOT_RUN_STARTED_AT"] = "2026-10-21T02:11:00Z"
+        with patch.dict(os.environ, env), patch.object(bot, "RUN_REPORT_ONLY", False):
+            reason = bot.scheduled_trade_skip_reason(now)
+        self.assertIn("대기시간", reason)
+
+        env.pop("BOT_RUN_CREATED_AT")
+        with patch.dict(os.environ, env), patch.object(bot, "RUN_REPORT_ONLY", False):
+            reason = bot.scheduled_trade_skip_reason(now)
+        self.assertIn("메타데이터가 없어 매매를 차단", reason)
+
+    def test_report_only_schedule_bypasses_trading_delay_guard(self):
+        now = bot.KST.localize(datetime(2026, 10, 21, 17, 56))
+        with patch.dict(os.environ, {
+            "GITHUB_EVENT_NAME": "schedule",
+            "BOT_SCHEDULE_CRON": bot.REPORT_ONLY_CRON,
+            "BOT_SCHEDULE_SLOT_KST": "15:35",
+        }), patch.object(bot, "RUN_REPORT_ONLY", True):
+            self.assertIsNone(bot.scheduled_trade_skip_reason(now))
+
+    def test_30_minute_kst_schedule_has_unique_weekday_slots_and_one_report_only(self):
+        workflow = Path(".github/workflows/trade.yml").read_text(encoding="utf-8")
+        entries = re.findall(
+            r"- cron: '([^']+)'\r?\n\s+timezone: '([^']+)'", workflow
+        )
+        self.assertEqual(len(entries), 14)
+        self.assertEqual({zone for _, zone in entries}, {"Asia/Seoul"})
+        self.assertEqual({cron for cron, _ in entries}, set(bot.SCHEDULE_CRON_TO_KST))
+        self.assertEqual(len({cron for cron, _ in entries}), len(entries))
+
+        expected_trading_slots = [
+            f"{hour:02d}:{minute:02d}"
+            for hour in range(9, 16)
+            for minute in (5, 35)
+            if (hour, minute) != (15, 35)
+        ]
+        self.assertEqual(
+            sorted(bot.SCHEDULE_CRON_TO_KST[cron] for cron, _ in entries
+                   if cron != bot.REPORT_ONLY_CRON),
+            expected_trading_slots,
+        )
+        self.assertEqual(bot.SCHEDULE_CRON_TO_KST[bot.REPORT_ONLY_CRON], "15:35")
+
+        slot_case = re.findall(
+            r"'([^']+)'\) slot='([^']+)'; report_only='([NY])' ;;", workflow
+        )
+        self.assertEqual(
+            {cron: slot for cron, slot, _ in slot_case},
+            bot.SCHEDULE_CRON_TO_KST,
+        )
+        report_cases = [cron for cron, _, report_only in slot_case if report_only == "Y"]
+        self.assertEqual(report_cases, [bot.REPORT_ONLY_CRON])
+        self.assertIn("RUN_REPORT_ONLY: ${{ steps.schedule.outputs.report_only || 'N' }}", workflow)
+        self.assertIn("RUN_MIDDAY_REPORT: ${{ steps.schedule.outputs.report_only || 'N' }}", workflow)
+        self.assertIn("group: kis-bot-single-account", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("workflow_dispatch:", workflow)
+
+    def test_live_order_is_blocked_after_market_close(self):
+        with patch.object(
+            bot, "now_kst",
+            return_value=bot.KST.localize(datetime(2026, 10, 21, 15, 36)),
+        ), patch.object(bot, "DRY_RUN", False), \
+             patch.object(bot, "api_request") as request:
+            with self.assertRaisesRegex(bot.TradeSafetyError, "정규장 시간 외"):
+                bot.execute_order("fake", "423160", 1, strategy="BAA")
+        request.assert_not_called()
 
     def test_broker_quantity_must_be_explicit_and_nonnegative_integer(self):
         for value in [None, "", "unknown", "-1", "1.5", "nan", True, "999999999999999999999999999999999999"]:
