@@ -56,4 +56,5 @@ jobs:
         run: python proposed/ci/run_offline_tests.py --source baseline test_bot_once test_api_resilience
       - name: Proposed full regression
         if: matrix.source == 'proposed'
-        run: python proposed/ci/run_offline_tests.py --source proposed test_bot_once test_api_resilience test_one_share test_swing_strategy
+        run: python proposed/ci/run_offline_tests.py --source proposed test_bot_once test_api_resilience test_one_share test_swing_strategy test_hourly_runtime
+
