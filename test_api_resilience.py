@@ -3,6 +3,7 @@
 Run in the kis-30m-bot repository AFTER applying apply_kis_balance_fix.py:
     python -m unittest -v test_bot_once.py test_api_resilience.py
 """
+import os
 import tempfile
 import unittest
 from datetime import datetime
@@ -160,7 +161,15 @@ class APIResilienceTests(unittest.TestCase):
         def run_baa(*args, **kwargs):
             if baa_order:
                 bot.ACCOUNT_ORDER_ATTEMPTS += 1
-        with tempfile.TemporaryDirectory() as folder, \
+        test_environment = {
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "BOT_SCHEDULE_CRON": "",
+            "BOT_SCHEDULE_SLOT_KST": "",
+            "BOT_RUN_CREATED_AT": "",
+            "BOT_RUN_STARTED_AT": "",
+        }
+        with patch.dict(os.environ, test_environment), \
+             tempfile.TemporaryDirectory() as folder, \
              patch.object(bot, 'LOCK_FILE', Path(folder) / '.test.lock'), \
              patch.object(bot, 'validate_environment'), \
              patch.object(bot, 'now_kst', return_value=date_obj), \
@@ -198,6 +207,18 @@ class APIResilienceTests(unittest.TestCase):
     def test_closing_report_without_orders_uses_initial_balance(self):
         balance_count, _ = self._run_main('16:10')
         self.assertEqual(balance_count, 1)
+
+    def test_main_helper_restores_scheduled_environment(self):
+        env_keys = (
+            "GITHUB_EVENT_NAME",
+            "BOT_SCHEDULE_CRON",
+            "BOT_SCHEDULE_SLOT_KST",
+            "BOT_RUN_CREATED_AT",
+            "BOT_RUN_STARTED_AT",
+        )
+        original = {key: os.environ.get(key) for key in env_keys}
+        self._run_main("11:10")
+        self.assertEqual({key: os.environ.get(key) for key in env_keys}, original)
 
 
 if __name__ == '__main__':

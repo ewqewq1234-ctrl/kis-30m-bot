@@ -2091,7 +2091,7 @@ def main():
         if RUN_REPORT_ONLY and not RUN_MIDDAY_REPORT:
             fail("보고 전용 실행에 RUN_MIDDAY_REPORT=Y가 없습니다.")
         if not RUN_REPORT_ONLY:
-            late_reason = scheduled_trade_skip_reason(now_kst())
+            late_reason = scheduled_trade_skip_reason(now)
             if late_reason:
                 print(f">> [예약 매매 차단] {late_reason}")
                 send_telegram(
