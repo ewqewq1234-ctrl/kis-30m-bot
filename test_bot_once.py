@@ -772,12 +772,14 @@ class StrategyAndIntegrationTests(unittest.TestCase):
     def test_late_scheduled_main_evaluates_fresh_trade_strategies(self):
         env = {
             'GITHUB_EVENT_NAME': 'schedule',
-            'BOT_SCHEDULE_CRON': '5 11 * * 1-5',
-            'BOT_SCHEDULE_SLOT_KST': '11:05',
-            'BOT_RUN_CREATED_AT': '2026-10-21T02:12:00Z',
-            'BOT_RUN_STARTED_AT': '2026-10-21T02:12:02Z',
+            'BOT_SCHEDULE_CRON': '35 9 * * 1-5',
+            'BOT_SCHEDULE_SLOT_KST': '09:35',
+            'BOT_RUN_CREATED_AT': '2026-10-21T00:35:00Z',
+            'BOT_RUN_STARTED_AT': '2026-10-21T05:15:00Z',
         }
-        with self.fixed_time(11, 12), patch.dict(os.environ, env), \
+        actual_start = bot.KST.localize(datetime(2026, 10, 21, 14, 15))
+        with patch.object(bot, 'now_kst', return_value=actual_start), \
+             patch.dict(os.environ, env), \
              patch.object(bot, 'KIS_APP_KEY', 'test'), \
              patch.object(bot, 'KIS_APP_SECRET', 'test'), \
              patch.object(bot, 'KIS_CANO', '12345678'), \
@@ -793,9 +795,12 @@ class StrategyAndIntegrationTests(unittest.TestCase):
              patch.object(bot, 'run_swing') as swing, \
              patch.object(bot, 'run_baa') as baa, \
              patch.object(bot, 'execute_order') as order, \
+             patch.object(bot, 'scheduled_trade_skip_reason',
+                          wraps=bot.scheduled_trade_skip_reason) as schedule_guard, \
              patch.object(bot, 'send_telegram') as telegram:
             bot.main()
         self.assertGreaterEqual(reconcile.call_count, 1)
+        schedule_guard.assert_called_once_with(actual_start)
         swing.assert_called_once()
         baa.assert_called_once()
         order.assert_not_called()
@@ -806,7 +811,13 @@ class StrategyAndIntegrationTests(unittest.TestCase):
         timeline=[]
         holdings={'423160':{'qty':6,'avg_price':110785}}
         # Simulate main() calls while leaving real migration/journal intact.
-        with self.fixed_time(10,40),patch.object(bot,'KIS_APP_KEY','test'),\
+        with self.fixed_time(10,40),patch.dict(os.environ, {
+             'GITHUB_EVENT_NAME': 'workflow_dispatch',
+             'BOT_SCHEDULE_CRON': '',
+             'BOT_SCHEDULE_SLOT_KST': '',
+             'BOT_RUN_CREATED_AT': '',
+             'BOT_RUN_STARTED_AT': '',
+        }),patch.object(bot,'KIS_APP_KEY','test'),\
              patch.object(bot,'KIS_APP_SECRET','test'),patch.object(bot,'KIS_CANO','12345678'),\
              patch.object(bot,'KIS_ENV','real'),patch.object(bot,'DRY_RUN',True),\
              patch.object(bot,'KIS_URL','https://openapi.koreainvestment.com:9443'),\

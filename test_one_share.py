@@ -483,7 +483,7 @@ class OneShareTests(unittest.TestCase):
             "BOT_RUN_STARTED_AT": "2026-10-21T04:00:00Z",
         }
         with patch.dict(os.environ, env), patch.object(bot, "RUN_REPORT_ONLY", False):
-            for hour, minute in [(11, 12), (13, 5), (15, 20)]:
+            for hour, minute in [(11, 12), (13, 5), (14, 15), (15, 20)]:
                 now = bot.KST.localize(datetime(2026, 10, 21, hour, minute))
                 self.assertIsNone(bot.scheduled_trade_skip_reason(now))
             env["BOT_RUN_CREATED_AT"] = ""
@@ -495,6 +495,23 @@ class OneShareTests(unittest.TestCase):
                 self.assertIn("시간 밖", bot.scheduled_trade_skip_reason(now))
             saturday = bot.KST.localize(datetime(2026, 10, 24, 11, 0))
             self.assertIn("시간 밖", bot.scheduled_trade_skip_reason(saturday))
+
+    def test_scheduled_trade_guard_rejects_cron_slot_mismatch(self):
+        env = {
+            "GITHUB_EVENT_NAME": "schedule",
+            "BOT_SCHEDULE_CRON": "35 9 * * 1-5",
+            "BOT_SCHEDULE_SLOT_KST": "14:15",
+        }
+        now = bot.KST.localize(datetime(2026, 10, 21, 14, 15))
+        with patch.dict(os.environ, env), patch.object(bot, "RUN_REPORT_ONLY", False):
+            self.assertIn("일치", bot.scheduled_trade_skip_reason(now))
+
+    def test_baa_is_not_evaluated_for_delayed_1415_execution(self):
+        now = bot.KST.localize(datetime(2026, 10, 21, 14, 15))
+        with patch.object(bot, "now_kst", return_value=now), \
+             patch.object(bot, "select_baa_target") as target:
+            bot.run_baa("offline", {}, 100_000, 100_000)
+        target.assert_not_called()
 
     def test_report_only_schedule_bypasses_trading_delay_guard(self):
         now = bot.KST.localize(datetime(2026, 10, 21, 17, 56))
