@@ -3,7 +3,9 @@ name: KIS Bot Persistent State
 on:
   workflow_dispatch:
   schedule:
-    # Request each original slot four hours early; execution latency is not guaranteed.
+    # Four-hour advance plus one-hour leading/trailing coverage; latency is not guaranteed.
+    - cron: '35 4 * * 1-5'
+      timezone: 'Asia/Seoul'
     - cron: '35 5 * * 1-5'
       timezone: 'Asia/Seoul'
     - cron: '5 7 * * 1-5'
@@ -13,6 +15,8 @@ on:
     - cron: '5 11 * * 1-5'
       timezone: 'Asia/Seoul'
     - cron: '35 11 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '35 12 * * 1-5'
       timezone: 'Asia/Seoul'
 
 permissions:
@@ -59,11 +63,13 @@ jobs:
         run: |
           set -euo pipefail
           case "$BOT_SCHEDULE_CRON" in
+            '35 4 * * 1-5') slot='09:35'; report_only='N'; logical_cron='35 9 * * 1-5' ;;
             '35 5 * * 1-5') slot='09:35'; report_only='N'; logical_cron='35 9 * * 1-5' ;;
             '5 7 * * 1-5') slot='11:05'; report_only='N'; logical_cron='5 11 * * 1-5' ;;
             '5 9 * * 1-5') slot='13:05'; report_only='N'; logical_cron='5 13 * * 1-5' ;;
             '5 11 * * 1-5') slot='15:05'; report_only='N'; logical_cron='5 15 * * 1-5' ;;
             '35 11 * * 1-5') slot='15:35'; report_only='Y'; logical_cron='35 15 * * 1-5' ;;
+            '35 12 * * 1-5') slot='15:35'; report_only='Y'; logical_cron='35 15 * * 1-5' ;;
             *) echo "Unrecognized scheduled cron; refusing to start bot." >&2; exit 1 ;;
           esac
           printf 'kst_slot=%s\nreport_only=%s\nlogical_cron=%s\n' "$slot" "$report_only" "$logical_cron" >> "$GITHUB_OUTPUT"
