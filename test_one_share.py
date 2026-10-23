@@ -522,35 +522,32 @@ class OneShareTests(unittest.TestCase):
         }), patch.object(bot, "RUN_REPORT_ONLY", True):
             self.assertIsNone(bot.scheduled_trade_skip_reason(now))
 
-    def test_five_daily_kst_schedule_has_unique_weekday_slots_and_one_report_only(self):
+    def test_five_early_kst_triggers_preserve_logical_slots_and_report(self):
         workflow = Path(".github/workflows/trade.yml").read_text(encoding="utf-8")
-        entries = re.findall(
-            r"- cron: '([^']+)'\r?\n\s+timezone: '([^']+)'", workflow
-        )
+        entries = re.findall(r"- cron: '([^']+)'\r?\n\s+timezone: '([^']+)'", workflow)
+        expected = {
+            "35 5 * * 1-5": ("09:35", "N", "35 9 * * 1-5"),
+            "5 7 * * 1-5": ("11:05", "N", "5 11 * * 1-5"),
+            "5 9 * * 1-5": ("13:05", "N", "5 13 * * 1-5"),
+            "5 11 * * 1-5": ("15:05", "N", "5 15 * * 1-5"),
+            "35 11 * * 1-5": ("15:35", "Y", "35 15 * * 1-5"),
+        }
         self.assertEqual(len(entries), 5)
         self.assertEqual({zone for _, zone in entries}, {"Asia/Seoul"})
-        self.assertTrue({cron for cron, _ in entries}.issubset(bot.SCHEDULE_CRON_TO_KST))
-        self.assertEqual(len({cron for cron, _ in entries}), len(entries))
-
-        expected_trading_slots = ["09:35", "11:05", "13:05", "15:05"]
-        self.assertEqual(
-            sorted(bot.SCHEDULE_CRON_TO_KST[cron] for cron, _ in entries
-                   if cron != bot.REPORT_ONLY_CRON),
-            expected_trading_slots,
+        self.assertEqual({cron for cron, _ in entries}, set(expected))
+        cases = re.findall(
+            r"'([^']+)'\) slot='([^']+)'; report_only='([NY])'; logical_cron='([^']+)' ;;",
+            workflow,
         )
-        self.assertEqual(bot.SCHEDULE_CRON_TO_KST[bot.REPORT_ONLY_CRON], "15:35")
-
-        slot_case = re.findall(
-            r"'([^']+)'\) slot='([^']+)'; report_only='([NY])' ;;", workflow
-        )
-        self.assertEqual(
-            {cron: slot for cron, slot, _ in slot_case},
-            {cron: bot.SCHEDULE_CRON_TO_KST[cron] for cron, _ in entries},
-        )
-        report_cases = [cron for cron, _, report_only in slot_case if report_only == "Y"]
-        self.assertEqual(report_cases, [bot.REPORT_ONLY_CRON])
+        self.assertEqual({c: (slot, report, logical) for c, slot, report, logical in cases}, expected)
+        for cron, (slot, report, logical) in expected.items():
+            self.assertEqual(bot.SCHEDULE_CRON_TO_KST[logical], slot)
+            minute, hour, *_ = cron.split()
+            self.assertEqual(int(hour) * 60 + int(minute) + 240,
+                             int(slot[:2]) * 60 + int(slot[3:]))
+            self.assertEqual(report == "Y", logical == bot.REPORT_ONLY_CRON)
+        self.assertIn("BOT_SCHEDULE_CRON: ${{ steps.schedule.outputs.logical_cron || '' }}", workflow)
         self.assertIn("RUN_REPORT_ONLY: ${{ steps.schedule.outputs.report_only || 'N' }}", workflow)
-        self.assertIn("RUN_MIDDAY_REPORT: ${{ steps.schedule.outputs.report_only || 'N' }}", workflow)
         self.assertIn("group: kis-bot-single-account", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("workflow_dispatch:", workflow)

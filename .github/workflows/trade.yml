@@ -3,16 +3,16 @@ name: KIS Bot Persistent State
 on:
   workflow_dispatch:
   schedule:
-    # Four market-session checks and one isolated closing report (KST weekdays).
-    - cron: '35 9 * * 1-5'
+    # Request each original slot four hours early; execution latency is not guaranteed.
+    - cron: '35 5 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '5 7 * * 1-5'
+      timezone: 'Asia/Seoul'
+    - cron: '5 9 * * 1-5'
       timezone: 'Asia/Seoul'
     - cron: '5 11 * * 1-5'
       timezone: 'Asia/Seoul'
-    - cron: '5 13 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '5 15 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '35 15 * * 1-5'
+    - cron: '35 11 * * 1-5'
       timezone: 'Asia/Seoul'
 
 permissions:
@@ -59,14 +59,14 @@ jobs:
         run: |
           set -euo pipefail
           case "$BOT_SCHEDULE_CRON" in
-            '35 9 * * 1-5') slot='09:35'; report_only='N' ;;
-            '5 11 * * 1-5') slot='11:05'; report_only='N' ;;
-            '5 13 * * 1-5') slot='13:05'; report_only='N' ;;
-            '5 15 * * 1-5') slot='15:05'; report_only='N' ;;
-            '35 15 * * 1-5') slot='15:35'; report_only='Y' ;;
+            '35 5 * * 1-5') slot='09:35'; report_only='N'; logical_cron='35 9 * * 1-5' ;;
+            '5 7 * * 1-5') slot='11:05'; report_only='N'; logical_cron='5 11 * * 1-5' ;;
+            '5 9 * * 1-5') slot='13:05'; report_only='N'; logical_cron='5 13 * * 1-5' ;;
+            '5 11 * * 1-5') slot='15:05'; report_only='N'; logical_cron='5 15 * * 1-5' ;;
+            '35 11 * * 1-5') slot='15:35'; report_only='Y'; logical_cron='35 15 * * 1-5' ;;
             *) echo "Unrecognized scheduled cron; refusing to start bot." >&2; exit 1 ;;
           esac
-          printf 'kst_slot=%s\nreport_only=%s\n' "$slot" "$report_only" >> "$GITHUB_OUTPUT"
+          printf 'kst_slot=%s\nreport_only=%s\nlogical_cron=%s\n' "$slot" "$report_only" "$logical_cron" >> "$GITHUB_OUTPUT"
 
       - name: Record trigger creation and runner start times
         if: github.event_name == 'schedule'
@@ -136,6 +136,8 @@ jobs:
 
       - name: Run bot (fail closed)
         env:
+          # Keep original logical slots for identity checks and report isolation.
+          BOT_SCHEDULE_CRON: ${{ steps.schedule.outputs.logical_cron || '' }}
           BOT_SCHEDULE_SLOT_KST: ${{ steps.schedule.outputs.kst_slot || '' }}
           RUN_REPORT_ONLY: ${{ steps.schedule.outputs.report_only || 'N' }}
           RUN_MIDDAY_REPORT: ${{ steps.schedule.outputs.report_only || 'N' }}
