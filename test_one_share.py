@@ -522,38 +522,15 @@ class OneShareTests(unittest.TestCase):
         }), patch.object(bot, "RUN_REPORT_ONLY", True):
             self.assertIsNone(bot.scheduled_trade_skip_reason(now))
 
-    def test_seven_early_kst_triggers_preserve_logical_slots_and_report(self):
+    def test_hourly_weekday_schedule_and_runtime_gate(self):
         workflow = Path(".github/workflows/trade.yml").read_text(encoding="utf-8")
         entries = re.findall(r"- cron: '([^']+)'\r?\n\s+timezone: '([^']+)'", workflow)
-        expected = {
-            "35 4 * * 1-5": ("09:35", "N", "35 9 * * 1-5"),
-            "35 5 * * 1-5": ("09:35", "N", "35 9 * * 1-5"),
-            "5 7 * * 1-5": ("11:05", "N", "5 11 * * 1-5"),
-            "5 9 * * 1-5": ("13:05", "N", "5 13 * * 1-5"),
-            "5 11 * * 1-5": ("15:05", "N", "5 15 * * 1-5"),
-            "35 11 * * 1-5": ("15:35", "Y", "35 15 * * 1-5"),
-            "35 12 * * 1-5": ("15:35", "Y", "35 15 * * 1-5"),
-        }
-        self.assertEqual(len(entries), 7)
-        self.assertEqual({zone for _, zone in entries}, {"Asia/Seoul"})
-        self.assertEqual({cron for cron, _ in entries}, set(expected))
-        cases = re.findall(
-            r"'([^']+)'\) slot='([^']+)'; report_only='([NY])'; logical_cron='([^']+)' ;;",
-            workflow,
-        )
-        self.assertEqual({c: (slot, report, logical) for c, slot, report, logical in cases}, expected)
-        for cron, (slot, report, logical) in expected.items():
-            self.assertEqual(bot.SCHEDULE_CRON_TO_KST[logical], slot)
-            minute, hour, *_ = cron.split()
-            advance = 300 if cron == "35 4 * * 1-5" else 180 if cron == "35 12 * * 1-5" else 240
-            self.assertEqual(int(hour) * 60 + int(minute) + advance,
-                             int(slot[:2]) * 60 + int(slot[3:]))
-            self.assertEqual(report == "Y", logical == bot.REPORT_ONLY_CRON)
-        self.assertIn("BOT_SCHEDULE_CRON: ${{ steps.schedule.outputs.logical_cron || '' }}", workflow)
-        self.assertIn("RUN_REPORT_ONLY: ${{ steps.schedule.outputs.report_only || 'N' }}", workflow)
-        self.assertIn("group: kis-bot-single-account", workflow)
+        self.assertEqual(entries, [("12 * * * 1-5", "Asia/Seoul")])
+        self.assertIn("id: runtime", workflow)
+        self.assertIn("9 <= now.hour < 17", workflow)
+        self.assertIn("HOURLY_OPERATION: 'N'", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
-        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("logical_cron", workflow)
 
     def test_live_order_is_blocked_after_market_close(self):
         with patch.object(
@@ -570,3 +547,4 @@ class OneShareTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(bot.TradeSafetyError):
                 bot.share_quantity(value)
         self.assertEqual(bot.share_quantity("1"), 1)
+

@@ -13,7 +13,7 @@ parser.add_argument("--source", type=Path, default=Path.cwd())
 parser.add_argument(
     "modules",
     nargs="*",
-    default=["test_bot_once", "test_api_resilience", "test_one_share", "test_swing_strategy"],
+    default=["test_bot_once", "test_api_resilience", "test_one_share", "test_swing_strategy", "test_hourly_runtime"],
 )
 args = parser.parse_args()
 source = args.source.resolve()
@@ -50,3 +50,4 @@ with (
     suite = unittest.defaultTestLoader.loadTestsFromNames(args.modules)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
 raise SystemExit(0 if result.wasSuccessful() else 1)
+

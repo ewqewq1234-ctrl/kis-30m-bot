@@ -138,7 +138,7 @@ def share_quantity(value):
 def send_telegram(message: str, is_alert: bool = False):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print(f"[Telegram 미설정/콘솔출력]\n{message}")
-        return
+        return False
     prefix = "🚨 [비상 경고]\n" if is_alert else ""
     try:
         response = requests.post(
@@ -147,8 +147,10 @@ def send_telegram(message: str, is_alert: bool = False):
             timeout=5,
         )
         response.raise_for_status()
+        return True
     except requests.RequestException as ex:
         print(f">> ⚠️ 텔레그램 전송 실패: {type(ex).__name__}")
+        return False
 
 
 def load_json(filepath, default):
@@ -1875,7 +1877,8 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
     now = now_kst()
     time_str = now.strftime("%H:%M")
     print(f"\n=== 🛡️ [공격형 BAA 전략 정밀 진단: {time_str}] ===")
-    if not ("11:00" <= time_str <= "11:25") and not force_run:
+    if (not ("11:00" <= time_str <= "11:25") and not force_run
+            and os.getenv("HOURLY_OPERATION") != "Y"):
         print(">> [BAA 대기] 정규 실행 시간(11:00~11:25)이 아닙니다.")
         return
     state = load_json(BAA_STATE_FILE, {"last_executed_date": None, "reinvest_pool": 0,
@@ -2068,8 +2071,51 @@ def log_invocation_context(now):
 # ==============================================================================
 # 7. 메인 실행 엔트리포인트
 # ==============================================================================
+def hourly_runtime_mode(now):
+    if now.weekday() >= 5:
+        return "OFF"
+    hm = now.strftime("%H:%M")
+    if "15:00" <= hm < "17:00":
+        return "TRADE_REPORT" if hm <= MARKET_END else "REPORT"
+    return "TRADE" if MARKET_START <= hm <= MARKET_END else "OFF"
+
+
+def send_hourly_session_report():
+    """Report saved state only; do not imply post-close broker verification."""
+    now = now_kst()
+    if now.weekday() >= 5 or not (15 <= now.hour < 17):
+        return False
+    phase = "provisional" if now.strftime("%H:%M") < "15:30" else "closing"
+    key = f"{now:%Y-%m-%d}:{phase}"
+    state = load_json(SCHEDULE_STATE_FILE, {})
+    if state.get("last_hourly_report") == key:
+        return False
+    swing = load_json(SWING_STATE_FILE, default_swing_state())
+    baa = load_json(BAA_STATE_FILE, {})
+    title = "장중 잠정 보고" if phase == "provisional" else "장 마감 보고"
+    message = (f"📋 <b>{title}</b> / {now:%Y-%m-%d %H:%M} KST\n"
+               f"SWING 저장 보유: {number(swing.get('owned_qty'))}주\n"
+               f"BAA 저장 종목: {html.escape(str(baa.get('target_code') or '없음'))} / "
+               f"보유 {number(baa.get('owned_qty'))}주\n"
+               "※ 저장 원장 기준. 현재 실계좌·종가·체결을 새로 검증한 보고가 아닙니다.")
+    if send_telegram(message) is False:
+        return False
+    state["last_hourly_report"] = key
+    save_json(SCHEDULE_STATE_FILE, state)
+    return True
+
+
 def main():
     now = now_kst()
+    hourly = os.getenv("HOURLY_OPERATION") == "Y"
+    if hourly:
+        mode = hourly_runtime_mode(now)
+        if mode == "OFF":
+            print(">> 장외/주말 즉시 종료 (브로커·알림 호출 없음)")
+            return
+        if mode == "REPORT":
+            send_hourly_session_report()
+            return
     print("==================================================")
     print(f"🤖 [한투 퀀트 트레이딩 봇 시작: {now:%Y-%m-%d %H:%M:%S}]")
     print("==================================================")
@@ -2077,7 +2123,7 @@ def main():
     print(f">> 모드: {'DRY_RUN 주문 차단' if DRY_RUN else '실전 주문 허용'} / KIS_ENV={KIS_ENV}")
     print(f">> BAA_MODE={BAA_MODE} / report_only={'Y' if RUN_REPORT_ONLY else 'N'}")
     log_invocation_context(now)
-    if os.getenv("GITHUB_EVENT_NAME") == "schedule":
+    if os.getenv("GITHUB_EVENT_NAME") == "schedule" and not hourly:
         monitor_scheduled_execution()
     with LOCK_FILE.open("a+") as file_lock:
         try:
@@ -2090,7 +2136,7 @@ def main():
             return
         if RUN_REPORT_ONLY and not RUN_MIDDAY_REPORT:
             fail("보고 전용 실행에 RUN_MIDDAY_REPORT=Y가 없습니다.")
-        if not RUN_REPORT_ONLY:
+        if not RUN_REPORT_ONLY and not hourly:
             late_reason = scheduled_trade_skip_reason(now)
             if late_reason:
                 print(f">> [예약 매매 차단] {late_reason}")
@@ -2128,7 +2174,10 @@ def main():
         assert_no_pending(token)
         if ACCOUNT_ORDER_ATTEMPTS != before_baa_orders:
             holdings, deposit, tot_eval = get_account_balance(token)
-        handle_daily_closing_report(token, holdings, tot_eval)
+        if hourly:
+            send_hourly_session_report()
+        else:
+            handle_daily_closing_report(token, holdings, tot_eval)
         print("\n>> 🏁 1회 실행 사이클이 완료되었습니다.")
 
 
@@ -2138,3 +2187,4 @@ if __name__ == "__main__":
     except (TradeSafetyError, requests.RequestException, ValueError, OSError) as exc:
         print(f">> ❌ [안전 중단] {exc}")
         sys.exit(1)
+
