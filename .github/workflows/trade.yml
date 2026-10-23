@@ -3,20 +3,8 @@ name: KIS Bot Persistent State
 on:
   workflow_dispatch:
   schedule:
-    # Four-hour advance plus one-hour leading/trailing coverage; latency is not guaranteed.
-    - cron: '35 4 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '35 5 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '5 7 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '5 9 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '5 11 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '35 11 * * 1-5'
-      timezone: 'Asia/Seoul'
-    - cron: '35 12 * * 1-5'
+    # Every weekday hour at minute 12, in Korean local time.
+    - cron: '12 * * * 1-5'
       timezone: 'Asia/Seoul'
 
 permissions:
@@ -46,55 +34,33 @@ jobs:
       RUN_REPORT_ONLY: 'N'
       RUN_MIDDAY_REPORT: 'N'
       BOT_SCHEDULE_CRON: ${{ github.event.schedule || '' }}
+      HOURLY_OPERATION: 'Y'
       GITHUB_STATE_MODE: git
       BOT_STATE_DIR: ${{ github.workspace }}/persistent_state
 
     steps:
+      - name: Exit immediately outside weekday market/report hours
+        id: runtime
+        shell: bash
+        run: |
+          python3 - <<'PYGATE'
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now = datetime.now(ZoneInfo("Asia/Seoul"))
+          active = now.weekday() < 5 and 9 <= now.hour < 17
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"active={str(active).lower()}\n")
+          print(f"Actual KST time: {now.isoformat()}; active={active}")
+          PYGATE
+
       - uses: actions/checkout@v4
+        if: steps.runtime.outputs.active == 'true'
         with:
           persist-credentials: true
 
-      - name: Resolve scheduled slot
-        id: schedule
-        if: github.event_name == 'schedule'
-        shell: bash
-        env:
-          BOT_SCHEDULE_CRON: ${{ github.event.schedule }}
-        run: |
-          set -euo pipefail
-          case "$BOT_SCHEDULE_CRON" in
-            '35 4 * * 1-5') slot='09:35'; report_only='N'; logical_cron='35 9 * * 1-5' ;;
-            '35 5 * * 1-5') slot='09:35'; report_only='N'; logical_cron='35 9 * * 1-5' ;;
-            '5 7 * * 1-5') slot='11:05'; report_only='N'; logical_cron='5 11 * * 1-5' ;;
-            '5 9 * * 1-5') slot='13:05'; report_only='N'; logical_cron='5 13 * * 1-5' ;;
-            '5 11 * * 1-5') slot='15:05'; report_only='N'; logical_cron='5 15 * * 1-5' ;;
-            '35 11 * * 1-5') slot='15:35'; report_only='Y'; logical_cron='35 15 * * 1-5' ;;
-            '35 12 * * 1-5') slot='15:35'; report_only='Y'; logical_cron='35 15 * * 1-5' ;;
-            *) echo "Unrecognized scheduled cron; refusing to start bot." >&2; exit 1 ;;
-          esac
-          printf 'kst_slot=%s\nreport_only=%s\nlogical_cron=%s\n' "$slot" "$report_only" "$logical_cron" >> "$GITHUB_OUTPUT"
-
-      - name: Record trigger creation and runner start times
-        if: github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPOSITORY: ${{ github.repository }}
-          GH_RUN_ID: ${{ github.run_id }}
-          BOT_SCHEDULE_CRON: ${{ github.event.schedule }}
-        run: |
-          set -euo pipefail
-          created_at="$(gh api "repos/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}" --jq '.created_at')"
-          runner_started_at="$(gh api "repos/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}/jobs" --jq '[.jobs[] | select(.name == "trade") | .started_at] | first')"
-          if [[ -z "$created_at" || "$created_at" == "null" \
-                || -z "$runner_started_at" || "$runner_started_at" == "null" ]]; then
-            echo "Missing workflow creation/start timestamp; refusing to continue." >&2
-            exit 1
-          fi
-          printf 'BOT_RUN_CREATED_AT=%s\nBOT_RUN_STARTED_AT=%s\n' \
-            "$created_at" "$runner_started_at" >> "$GITHUB_ENV"
-          echo "Scheduled event: cron=$BOT_SCHEDULE_CRON run_id=$GH_RUN_ID created_at=$created_at runner_started_at=$runner_started_at"
-
       - name: Initialize or fetch persistent state branch
+        if: steps.runtime.outputs.active == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -116,13 +82,17 @@ jobs:
           fi
 
       - uses: actions/setup-python@v5
+        if: steps.runtime.outputs.active == 'true'
         with:
           python-version: '3.11'
           cache: pip
 
       - run: pip install -r requirements.txt
+        if: steps.runtime.outputs.active == 'true'
       - run: python -m py_compile bot_once.py
-      - run: python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py test_swing_strategy.py
+        if: steps.runtime.outputs.active == 'true'
+      - run: python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py test_swing_strategy.py test_hourly_runtime.py
+        if: steps.runtime.outputs.active == 'true'
         env:
           GITHUB_STATE_MODE: 'off'
           BOT_STATE_DIR: ${{ runner.temp }}/kis-offline-test-state
@@ -137,14 +107,17 @@ jobs:
           ENABLE_LIVE_ORDERS: 'NO'
           FORCE_BAA: 'N'
           BAA_MODE: AUTO
+          HOURLY_OPERATION: 'N'
           RUN_REPORT_ONLY: 'N'
           RUN_MIDDAY_REPORT: 'N'
 
       - name: Run bot (fail closed)
+        if: steps.runtime.outputs.active == 'true'
         env:
           # Keep original logical slots for identity checks and report isolation.
-          BOT_SCHEDULE_CRON: ${{ steps.schedule.outputs.logical_cron || '' }}
-          BOT_SCHEDULE_SLOT_KST: ${{ steps.schedule.outputs.kst_slot || '' }}
-          RUN_REPORT_ONLY: ${{ steps.schedule.outputs.report_only || 'N' }}
-          RUN_MIDDAY_REPORT: ${{ steps.schedule.outputs.report_only || 'N' }}
+          BOT_SCHEDULE_CRON: ${{ github.event.schedule || '' }}
+          BOT_SCHEDULE_SLOT_KST: 'hourly'
+          RUN_REPORT_ONLY: N
+          RUN_MIDDAY_REPORT: N
         run: python bot_once.py
+
