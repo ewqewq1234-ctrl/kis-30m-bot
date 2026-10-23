@@ -4,7 +4,7 @@
   "migration_status": "COMPLETE",
   "migration_completed_at": "2026-10-22 10:55:33",
   "position_id": null,
-  "signal_date": "2026-10-21",
+  "signal_date": "2026-10-22",
   "signal_status": "NO_ENTRY",
   "entry_signal_date": null,
   "entry_signal_close": null,
@@ -20,11 +20,11 @@
   "initial_stop": null,
   "active_stop": null,
   "highest_completed_close": null,
-  "last_processed_bar_date": "2026-10-21",
+  "last_processed_bar_date": "2026-10-22",
   "exit_intent": null,
   "exit_order_intent_id": null,
   "last_exit_session": null,
   "data_status": "CURRENT",
   "data_error": null,
-  "data_as_of_date": "2026-10-21"
+  "data_as_of_date": "2026-10-22"
 }
