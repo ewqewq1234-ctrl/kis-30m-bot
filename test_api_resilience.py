@@ -1,6 +1,6 @@
 """Additional tests for safe KIS balance/API resilience. No broker orders are sent.
 
-Run in the kis-30m-bot repository AFTER applying apply_kis_balance_fix.py:
+Run in the kis-30m-bot repository:
     python -m unittest -v test_bot_once.py test_api_resilience.py
 """
 import os
