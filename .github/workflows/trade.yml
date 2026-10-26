@@ -43,7 +43,10 @@ jobs:
       - name: Exit immediately outside weekday market/report hours
         id: runtime
         shell: bash
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
+          echo "cron=$SCHEDULE"
           python3 - <<'PYGATE'
           import os
           from datetime import datetime
