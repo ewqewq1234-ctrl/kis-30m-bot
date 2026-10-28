@@ -525,7 +525,7 @@ class OneShareTests(unittest.TestCase):
     def test_hourly_weekday_schedule_and_runtime_gate(self):
         workflow = Path(".github/workflows/trade.yml").read_text(encoding="utf-8")
         entries = re.findall(r"- cron: '([^']+)'", workflow)
-        self.assertEqual(entries, ["12 22,23 * * 0-4", "12 0-8 * * 1-5"])
+        self.assertEqual(entries, ["12 22 * * 0-4","12 23 * * 0-4","12 0 * * 1-5","12 1 * * 1-5","12 2 * * 1-5","12 3 * * 1-5","12 4 * * 1-5","12 5 * * 1-5","12 6 * * 1-5","12 7 * * 1-5","12 8 * * 1-5"])
         self.assertNotIn("timezone:", workflow)
         self.assertIn("id: runtime", workflow)
         self.assertIn("9 <= now.hour < 17", workflow)
