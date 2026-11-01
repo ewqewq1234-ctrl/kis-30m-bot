@@ -103,7 +103,7 @@ jobs:
         if: steps.runtime.outputs.active == 'true'
       - run: python -m py_compile bot_once.py
         if: steps.runtime.outputs.active == 'true'
-      - run: python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py test_swing_strategy.py test_hourly_runtime.py
+      - run: python ci/run_offline_tests.py test_bot_once test_api_resilience test_one_share test_swing_strategy test_hourly_runtime test_strategy_retirement test_dividend_value
         if: steps.runtime.outputs.active == 'true'
         env:
           GITHUB_STATE_MODE: 'off'

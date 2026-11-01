@@ -23,6 +23,7 @@ import requests
 from datetime import datetime, timedelta
 from pathlib import Path
 import pytz
+from portfolio_config import BAA_TARGET_RATIO, DIVIDEND_VALUE_TARGET_RATIO
 
 # ==============================================================================
 # 1. 환경 변수 및 글로벌 설정
@@ -75,9 +76,7 @@ REPORT_ONLY_CRON = "35 15 * * 1-5"
 SCHEDULE_CRON_TO_KST[REPORT_ONLY_CRON] = "15:35"
 
 CODE_BULL = "069500"
-SWING_BUDGET_RATIO = 0.30
-SWING_INITIAL_WEIGHT = 0.50
-BAA_TARGET_RATIO = 0.80
+# SWING is retired. Its journal/state parsers below are historical reconciliation only.
 
 CANARY_UNIVERSE = {
     "360750": "TIGER 미국S&P500",
@@ -1271,8 +1270,10 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
         return False, 0
     if not DRY_RUN and now_kst().date() < LIVE_TRADING_START_DATE:
         fail(f"실거래 시작일({LIVE_TRADING_START_DATE}) 이전에는 주문을 차단합니다")
-    if order_type not in ("01", "02") or strategy not in ("SWING", "BAA"):
+    if order_type not in ("01", "02") or strategy != "BAA":
         fail("잘못된 주문 방향/전략")
+    if code == CODE_BULL:
+        fail("삭제된 KODEX 200 전략의 자동 주문은 비활성입니다")
     if ord_dvsn not in ("00", "01") or (ord_dvsn == "00" and number(price) <= 0):
         fail("잘못된 주문구분/지정가")
     if not order_window() or not is_market_open_today(token):
@@ -1288,35 +1289,8 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
                                   ord_dvsn=ord_dvsn)
         if qty > allowed:
             fail(f"매수가능 {allowed}주 < 요청 {qty}주: 수량 자동변경 없이 주문 차단")
-        if code == CODE_BULL:
-            if strategy != "SWING":
-                fail("069500 매수는 SWING 전략만 허용")
-            holdings, _, _ = get_account_balance(token)
-            actual_qty = share_quantity(holdings.get(code, {}).get("qty", 0))
-            swing = load_json(SWING_STATE_FILE, {})
-            baa = load_json(BAA_STATE_FILE, {})
-            day = load_json(DAY_STATE_FILE, {})
-            if (actual_qty != share_quantity(swing.get("owned_qty", 0))
-                    or number(day.get("owned_qty"))
-                    or (baa.get("target_code") == code
-                        and share_quantity(baa.get("owned_qty", 0)) > 0)):
-                fail("069500 주문 직전 잔고/전략 원장 불일치")
-            if qty != 1 or actual_qty + qty > 1:
-                fail("069500 계좌 총보유량 1주 상한 초과: 매수 차단")
     else:
         holdings, _, _ = get_account_balance(token)
-        if code == CODE_BULL:
-            if strategy != "SWING":
-                fail("기존 DAY/기타 전략의 069500 자동 매도는 비활성화되어 있습니다")
-            swing = load_json(SWING_STATE_FILE, {})
-            day = load_json(DAY_STATE_FILE, {})
-            baa = load_json(BAA_STATE_FILE, {})
-            actual_qty = share_quantity(holdings.get(code, {}).get("qty", 0))
-            if (actual_qty != share_quantity(swing.get("owned_qty", 0))
-                    or actual_qty > 1
-                    or number(day.get("owned_qty"))
-                    or (baa.get("target_code") == code and number(baa.get("owned_qty")))):
-                fail("069500 매도 직전 잔고/전략 소유권 불일치")
         if holdings.get(code, {}).get("qty", 0) < qty:
             fail(f"보유보다 많은 매도 차단 {code}:{qty}주")
     key = order_key(code, side, strategy, action_name)
@@ -1549,217 +1523,21 @@ def calc_fast_baa(closes: list) -> float:
 # ==============================================================================
 # 5. KODEX 200 SWING strategy
 # ==============================================================================
-def run_swing(token: str, holdings: dict, deposit: int, total_asset: int):
-    now = now_kst()
-    today = now.date()
-    time_hm = now.strftime("%H:%M")
-    try:
-        state = migrate_swing_state_if_safe(holdings)
-    except TradeSafetyError as exc:
-        print(f">> [SWING 중단/BAA 유지] {exc}")
-        return
-    actual_qty = share_quantity(holdings.get(CODE_BULL, {}).get("qty", 0))
-    owned = share_quantity(state.get("owned_qty", 0))
+def run_swing(*args, **kwargs):
+    """Retired compatibility entry point: cannot submit any order."""
+    fail("KODEX 200 SWING 전략은 삭제되었습니다. 신규·청산 주문 모두 비활성입니다.")
+
+
+def assert_retired_swing_flat(holdings):
+    """Never abandon or silently liquidate a former strategy position."""
+    swing = load_json(SWING_STATE_FILE, {})
     day = load_json(DAY_STATE_FILE, {})
-    baa = load_json(BAA_STATE_FILE, {})
-    if (actual_qty != owned or actual_qty > 1 or number(day.get("owned_qty"))
-            or (baa.get("target_code") == CODE_BULL and number(baa.get("owned_qty")))):
-        try:
-            fail("069500 잔고/전략 소유권 불일치: SWING 자동화를 중단합니다")
-        except TradeSafetyError as exc:
-            print(f">> [SWING 중단/BAA 유지] {exc}")
-        return
-    if owned:
-        actual_avg = float(holdings.get(CODE_BULL, {}).get("avg_price") or 0)
-        verified_avg = float(state.get("verified_entry_price") or 0)
-        if actual_avg <= 0 or verified_avg <= 0 or not math.isclose(actual_avg, verified_avg, abs_tol=1.0):
-            try:
-                fail("069500 계좌 평균매입가와 SWING 확인 체결가가 다릅니다")
-            except TradeSafetyError as exc:
-                print(f">> [SWING 중단/BAA 유지] {exc}")
-            return
-
-    bars = None
-    signal = None
-    try:
-        bars = get_validated_daily_bars(token, today)
-        signal = swing_signal(bars)
-        state["data_status"] = "CURRENT"
-        state["data_error"] = None
-        state["data_as_of_date"] = signal["signal_date"]
-    except TradeSafetyError as exc:
-        state["data_status"] = "INVALID_OR_STALE"
-        state["data_error"] = str(exc)
-        save_json(SWING_STATE_FILE, state)
-        print(f">> [SWING 진입 차단] 일봉 데이터 검증 실패: {exc}")
-
-    if bars:
-        latest_date = signal["signal_date"]
-        if state.get("last_processed_bar_date") != latest_date:
-            if owned and state.get("entry_session"):
-                entry_date = datetime.strptime(state["entry_session"], "%Y-%m-%d").date()
-                eligible_closes = [bar["close"] for bar in bars if bar["date"] >= entry_date]
-                if eligible_closes:
-                    highest = max(
-                        float(state.get("highest_completed_close") or 0),
-                        max(eligible_closes),
-                    )
-                    initial_stop = float(state.get("initial_stop") or 0)
-                    fixed_atr = float(state.get("entry_atr14") or 0)
-                    state["highest_completed_close"] = highest
-                    state["active_stop"] = max(
-                        float(state.get("active_stop") or initial_stop),
-                        initial_stop, highest - 3 * fixed_atr,
-                    )
-            state["last_processed_bar_date"] = latest_date
-            if state.get("signal_date") != latest_date:
-                try:
-                    next_session = next_exchange_session(token, bars[-1]["date"])
-                except TradeSafetyError as exc:
-                    print(f">> [SWING 진입 차단] 다음 거래일 검증 실패: {exc}")
-                    print(">> [SWING 신호 차단] 최신 완료 일봉의 다음 거래일이 오늘과 다릅니다.")
-                    state["signal_status"] = "DATA_SESSION_MISMATCH"
-                    state["entry_opportunity_status"] = "NONE"
-                else:
-                    if next_session != today:
-                        print(">> [SWING 신호 차단] 최신 완료 일봉의 다음 거래일이 오늘과 다릅니다.")
-                        state["signal_status"] = "DATA_SESSION_MISMATCH"
-                        state["entry_opportunity_status"] = "NONE"
-                    else:
-                        state.update({
-                            "signal_date": latest_date,
-                            "signal_status": "ENTRY" if signal["entry"] else "NO_ENTRY",
-                            "entry_signal_date": latest_date if signal["entry"] else None,
-                            "entry_signal_close": signal["close"] if signal["entry"] else None,
-                            "signal_atr14": signal["atr14"] if signal["entry"] else None,
-                            "entry_opportunity_date": today.isoformat() if signal["entry"] else None,
-                            "entry_opportunity_status": "PENDING" if signal["entry"] else "NONE",
-                            "entry_skip_reason": None,
-                        })
-            if owned and signal["trend_exit"]:
-                state["exit_intent"] = state.get("exit_intent") or "TREND"
-            save_json(SWING_STATE_FILE, state)
-        else:
-            save_json(SWING_STATE_FILE, state)
-
-    if state.get("entry_opportunity_status") == "PENDING":
-        opportunity = state.get("entry_opportunity_date")
-        if opportunity and opportunity < today.isoformat():
-            state["entry_opportunity_status"] = "EXPIRED"
-            state["entry_skip_reason"] = "next exchange session passed"
-            save_json(SWING_STATE_FILE, state)
-
-    if not owned:
-        if (not bars or state.get("entry_opportunity_date") != today.isoformat()
-                or state.get("entry_opportunity_status") != "PENDING"
-                or state.get("last_exit_session") == today.isoformat()):
-            return
-        if not ("09:10" <= time_hm <= "14:30"):
-            print(">> [SWING 대기] 신규 진입 시간(09:10-14:30) 밖이며 기회는 유지됩니다.")
-            return
-        try:
-            quote = get_current_price(token, CODE_BULL)
-        except TradeSafetyError as exc:
-            state["entry_opportunity_status"] = "SKIPPED"
-            state["entry_skip_reason"] = f"current quote unavailable: {exc}"
-            save_json(SWING_STATE_FILE, state)
-            print(f">> [SWING 진입 차단] {exc}")
-            return
-        signal_close = float(state["entry_signal_close"])
-        signal_atr = float(state["signal_atr14"])
-        max_price = signal_close + signal_atr
-        limit_price = limit_buy_tick(max_price)
-
-        def skip_entry(reason):
-            state["entry_opportunity_status"] = "SKIPPED"
-            state["entry_skip_reason"] = reason
-            save_json(SWING_STATE_FILE, state)
-            print(f">> [SWING 진입 생략] {reason}")
-
-        if quote > max_price:
-            skip_entry("anti-chasing: quote above signal close + ATR14")
-            return
-        if quote > limit_price:
-            skip_entry("anti-chasing: no valid tick price at or below the signal cap")
-            return
-        sleeve_budget = min(
-            float(total_asset) * SWING_BUDGET_RATIO * SWING_INITIAL_WEIGHT,
-            float(deposit),
-        ) * 0.96
-        if limit_price <= 0 or limit_price > sleeve_budget:
-            skip_entry("former DAY sleeve or available cash cannot fund one share")
-            return
-        try:
-            buyable_qty = get_buyable_qty(token, CODE_BULL, limit_price, ord_dvsn="00")
-        except TradeSafetyError as exc:
-            skip_entry(f"broker buyability check failed: {exc}")
-            return
-        if buyable_qty < 1:
-            skip_entry("broker-reported buyable quantity is below one share")
-            return
-        intent_id = order_key(CODE_BULL, "BUY", "SWING", "SWING entry")
-        state["entry_opportunity_status"] = "SUBMITTING"
-        state["entry_order_intent_id"] = intent_id
-        save_json(SWING_STATE_FILE, state)
-        filled, fill_qty = execute_order(
-            token, CODE_BULL, 1, "02", ord_dvsn="00", price=limit_price,
-            action_name="SWING entry", strategy="SWING",
-            strategy_metadata={
-                "entry_atr14": signal_atr, "signal_date": state["entry_signal_date"],
-                "signal_close": signal_close, "entry_session": today.isoformat(),
-            })
-        if filled and fill_qty == 1:
-            rebuild_strategy_state()
-            state = load_json(SWING_STATE_FILE, default_swing_state())
-            state["entry_opportunity_status"] = "FILLED"
-            state["entry_atr14"] = signal_atr
-            state["initial_stop"] = state["verified_entry_price"] - 2 * signal_atr
-            state["active_stop"] = state["initial_stop"]
-            save_json(SWING_STATE_FILE, state)
-        elif DRY_RUN:
-            state["entry_opportunity_status"] = "DRY_RUN"
-            state["entry_skip_reason"] = "dry-run: no order submitted"
-            state["entry_order_intent_id"] = None
-            save_json(SWING_STATE_FILE, state)
-        return
-
-    if not ("09:00" <= time_hm <= "15:20"):
-        return
-    try:
-        quote = get_current_price(token, CODE_BULL)
-    except TradeSafetyError as exc:
-        print(f">> [SWING 보유 위험관리 보류] 유효 현재가 없음: {exc}")
-        return
-    active_stop = state.get("active_stop")
-    if active_stop is not None and quote <= float(active_stop):
-        state["exit_intent"] = "PROTECTIVE_STOP"
-        save_json(SWING_STATE_FILE, state)
-    if state.get("exit_intent"):
-        avg_price = float(state.get("verified_entry_price") or 0)
-        if avg_price <= 0:
-            fail("SWING 확인 체결 평균가가 없어 매도를 중단합니다")
-        reason = state["exit_intent"]
-        state["exit_order_intent_id"] = order_key(
-            CODE_BULL, "SELL", "SWING", f"SWING exit {reason}"
-        )
-        save_json(SWING_STATE_FILE, state)
-        filled, fill_qty = execute_order(
-            token, CODE_BULL, owned, "01", action_name=f"SWING exit {reason}",
-            strategy="SWING", cost_basis=avg_price,
-        )
-        if filled and fill_qty == owned:
-            rebuild_strategy_state()
-            state = load_json(SWING_STATE_FILE, default_swing_state())
-            state["exit_intent"] = None
-            state["exit_order_intent_id"] = None
-            state["last_exit_session"] = today.isoformat()
-            state["entry_opportunity_status"] = "CLOSED"
-            save_json(SWING_STATE_FILE, state)
+    if (share_quantity(holdings.get(CODE_BULL, {}).get("qty", 0))
+            or share_quantity(swing.get("owned_qty", 0))
+            or share_quantity(day.get("owned_qty", 0))):
+        fail("삭제된 KODEX 200 전략의 보유/상태가 남아 있습니다. 수동 대조 필요; 자동 매도하지 않습니다.")
 
 
-# ==============================================================================
-# 6. 공격형 BAA 전략 및 장 마감 일일 결산 리포트
-# ==============================================================================
 def select_baa_target(token):
     if BAA_MODE not in {"AUTO", "ATTACK"}:
         fail("BAA_MODE는 AUTO 또는 ATTACK이어야 합니다.")
@@ -1832,39 +1610,12 @@ def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
     target_label = (f"{name} ({code})" if code else "공격 적격 종목 없음 (신규매수 생략)")
     canary_summary = (", ".join(logs) if BAA_MODE == "AUTO"
                       else "ATTACK 고정 모드: 카나리아 방어 신호로 전환하지 않음")
-    swing = load_json(SWING_STATE_FILE, default_swing_state())
-    swing_status = (f"수량 {number(swing.get('owned_qty'))}주 / 확인 체결가 "
-                    f"{number(swing.get('verified_entry_price')):,}원 / "
-                    f"신호 {swing.get('signal_date') or '없음'} "
-                    f"({swing.get('signal_status') or '미평가'})")
-    swing_levels = (f"고정 진입 ATR {number(swing.get('entry_atr14')):,.0f}원 / "
-                    f"초기·활성 스톱 {number(swing.get('initial_stop')):,}원 / "
-                    f"{number(swing.get('active_stop')):,}원")
-    swing_entry = (f"진입기회 {swing.get('entry_opportunity_status') or '없음'}"
-                   f"{': ' + str(swing.get('entry_skip_reason')) if swing.get('entry_skip_reason') else ''}")
-    swing_exit = (f"최근 완료 일봉 {swing.get('last_processed_bar_date') or '없음'} / "
-                  f"고점 종가 {number(swing.get('highest_completed_close')):,}원 / "
-                  f"청산 의도 {swing.get('exit_intent') or '없음'}")
-    swing_data = (f"일봉 {swing.get('data_status') or '미확인'} "
-                  f"({swing.get('data_as_of_date') or '기준일 없음'})"
-                  f"{': ' + str(swing.get('data_error')) if swing.get('data_error') else ''}")
-    pending_swing = [
-        f"{order.get('id')}:{order.get('status')}"
-        for order in journal_orders()
-        if order.get("strategy") == "SWING"
-        and order.get("status") in {"INTENT", "UNCERTAIN", "ACCEPTED", "PARTIAL", "UNKNOWN"}
-    ]
     msg = (f"📋 <b>[장 마감 결산 - {'지연 복구' if recovered else '15:35 예약'}]</b>\n📅 날짜: {now:%Y-%m-%d} / 실제 조회: {now:%H:%M} KST\n"
            f"━━━━━━━━━━━━━━━━━━━━\n• 운용 모드: {'🛡️ 수비 모드' if is_defense else '🚀 공격 모드'}\n"
            f"• 선정 타깃: <b>{html.escape(target_label)}</b>\n"
            f"• 카나리아 점검: {html.escape(canary_summary)}\n"
            f"• 총 평가 자산: {total_asset:,.0f}원\n"
-           f"• SWING(KODEX 200): {html.escape(swing_status)}\n"
-           f"• {html.escape(swing_levels)}\n"
-           f"• {html.escape(swing_entry)}\n"
-           f"• {html.escape(swing_exit)}\n"
-           f"• 데이터 신선도: {html.escape(swing_data)}\n"
-           f"• 미확정 SWING 주문: {html.escape(', '.join(pending_swing) if pending_swing else '없음')}\n"
+           f"• 배분: 공격형 BAA {BAA_TARGET_RATIO:.0%} / 배당·가치 {DIVIDEND_VALUE_TARGET_RATIO:.0%} (검색 전용·주문 비활성)\n"
            f"• 현재 실행 시각: {now:%H:%M:%S} KST; 보고 전용 실행\n━━━━━━━━━━━━━━━━━━━━")
     send_telegram(msg, is_alert=recovered)
     if not FORCE_BAA:
@@ -1934,7 +1685,7 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
     sma20 = sum(target_closes[-20:]) / 20
     sma60 = sum(target_closes[-60:]) / 60
     is_bull = sma20 >= sma60
-    # Total-asset target = 80%, *not* available-cash target. Reinvestment already in NAV.
+    # Total-asset allocation comes from portfolio.json; reinvestment is already in NAV.
     total_budget = total_asset * BAA_TARGET_RATIO
     target_stage_budget = total_budget if is_bull else total_budget * 0.50
     intended_value = target_stage_budget * 0.96
@@ -2090,7 +1841,6 @@ def send_hourly_session_report():
     state = load_json(SCHEDULE_STATE_FILE, {})
     if state.get("last_hourly_report") == key:
         return False
-    swing = load_json(SWING_STATE_FILE, default_swing_state())
     baa = load_json(BAA_STATE_FILE, {})
     title = "장중 잠정 보고" if phase == "provisional" else "장 마감 보고"
     message = (f"📋 <b>{title}</b> / {now:%Y-%m-%d %H:%M} KST\n"
@@ -2159,15 +1909,13 @@ def main():
         total_asset = tot_eval
         print(f">> 계좌 예수금: {deposit:,}원 | 총 평가자산: {total_asset:,}원 | 보유종목수: {len(holdings)}개")
         adopt_verified_legacy_baa(token, holdings)
-        before_intraday_orders = ACCOUNT_ORDER_ATTEMPTS
-        run_swing(token, holdings, deposit, total_asset)
+        assert_retired_swing_flat(holdings)
         # Always reconcile before BAA; no automatic reorders on uncertain fills.
         assert_no_pending(token)
         # Refresh before BAA when the bot placed an order, or when BAA may trade.
         # In other windows, reuse the initial snapshot to avoid needless API calls.
         baa_time = now_kst().strftime("%H:%M")
-        if (ACCOUNT_ORDER_ATTEMPTS != before_intraday_orders or FORCE_BAA
-                or "11:00" <= baa_time <= "11:25"):
+        if FORCE_BAA or "11:00" <= baa_time <= "11:25":
             holdings, deposit, tot_eval = get_account_balance(token)
         before_baa_orders = ACCOUNT_ORDER_ATTEMPTS
         run_baa(token, holdings, deposit, tot_eval, force_run=FORCE_BAA)

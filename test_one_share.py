@@ -59,7 +59,8 @@ class OneShareTests(unittest.TestCase):
             with self.subTest(actual=actual, owned=owned, qty=qty):
                 with self.assertRaises(bot.TradeSafetyError):
                     self.attempt(actual, owned, qty)
-        self.assertEqual(self.attempt(), (False, 0))
+        with self.assertRaises(bot.TradeSafetyError):
+            self.attempt()
 
     def test_069500_day_order_is_rejected_without_post(self):
         with patch.object(bot, "api_request") as request:
@@ -73,7 +74,8 @@ class OneShareTests(unittest.TestCase):
                 self.attempt(**kwargs)
 
     def test_sell_is_not_blocked_by_one_share_buy_cap(self):
-        self.assertEqual(self.attempt(actual=1, owned=1, qty=1, side="01"), (False, 0))
+        with self.assertRaises(bot.TradeSafetyError):
+            self.attempt(actual=1, owned=1, qty=1, side="01")
 
     def test_fresh_account_verification_failure_blocks_order(self):
         with patch.object(bot, "order_window", return_value=True), \
@@ -144,7 +146,7 @@ class OneShareTests(unittest.TestCase):
         self.assertNotIn("069500", bot.ATTACK_UNIVERSE)
         self.assertIn("453850", bot.DEFENSE_UNIVERSE)
         self.assertEqual(set(bot.ATTACK_UNIVERSE), {"133690", "122630", "381180"})
-        self.assertEqual(bot.BAA_TARGET_RATIO, 0.80)
+        self.assertEqual(bot.BAA_TARGET_RATIO, 0.60)
 
     def test_comparison_metrics_use_existing_fast_baa_formula(self):
         closes = [100.0 + index for index in range(252)]

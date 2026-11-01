@@ -1,0 +1,70 @@
+name: Dividend value read-only screen
+on:
+  workflow_call:
+    inputs:
+      max_symbols:
+        type: string
+        default: '0'
+    secrets:
+      KIS_APP_KEY:
+        required: false
+      KIS_APP_SECRET:
+        required: false
+      DART_API_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: '0 = all; positive = partial batch, resume on the same cutoff'
+        default: '0'
+        required: true
+  schedule:
+    - cron: '0 0 * * 0'  # Sunday 00:00 UTC = Sunday 09:00 KST; latest completed session.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dividend-value-read-only-screen
+  cancel-in-progress: false
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Offline screening rules and API boundary tests
+        run: python ci/run_offline_tests.py test_dividend_value
+      - uses: actions/cache/restore@v4
+        with:
+          path: .screen-cache
+          key: dividend-value-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: dividend-value-v1-
+      - name: Read official market data and disclosures (no account or order API)
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          MAX_SYMBOLS: ${{ inputs.max_symbols || '0' }}
+          PYTHONUNBUFFERED: '1'
+        run: python -m dividend_value.screen --max-symbols "$MAX_SYMBOLS"
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .screen-cache
+          key: dividend-value-v1-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dividend-value-${{ github.run_id }}
+          path: results/dividend-value/
+          if-no-files-found: error
+          retention-days: 30

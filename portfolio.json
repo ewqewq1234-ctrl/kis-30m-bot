@@ -1,0 +1,6 @@
+{
+  "baa_target_ratio": 0.60,
+  "dividend_value_target_ratio": 0.40,
+  "dividend_value_orders_enabled": false,
+  "swing_enabled": false
+}

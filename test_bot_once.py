@@ -305,7 +305,7 @@ class FullCoverageTests(unittest.TestCase):
         state = bot.load_json(bot.BAA_STATE_FILE, {})
         self.assertEqual(state['owned_qty'], 6)
         self.assertFalse(state.get('last_executed_date'))
-        self.assertEqual(int(964929 * .8 * .96 // 110800), 6)
+        self.assertEqual(int(964929 * .6 * .96 // 110800), 5)
 
     def test_baa_bearish_half_allocation_dry_run_preserves_six(self):
         self.owned()
@@ -318,14 +318,14 @@ class FullCoverageTests(unittest.TestCase):
             bot.run_baa('fake', {'423160': {'qty': 6, 'avg_price': 110785}}, 300159, 964929)
         order.assert_not_called()
         self.assertEqual(bot.load_json(bot.BAA_STATE_FILE, {})['owned_qty'], 6)
-        self.assertEqual(int(964929 * .8 * .5 * .96 // 110800), 3)
+        self.assertEqual(int(964929 * .6 * .5 * .96 // 110800), 2)
 
-    def test_baa_live_mock_trims_exactly_one_without_real_api(self):
+    def test_baa_live_mock_trims_to_sixty_percent_without_real_api(self):
         self.owned()
         calls = []
         def fake_order(token, code, qty, order_type, **kwargs):
             calls.append((code, qty, order_type))
-            self.assertEqual((code, qty, order_type), ('423160', 1, '01'))
+            self.assertEqual((code, qty, order_type), ('423160', 2, '01'))
             data = bot.read_journal()
             data['orders'].append({'id':'sell-1', 'strategy':'BAA','side':'SELL',
                                    'code':'423160','status':'FILLED','requested_qty':qty,
@@ -337,11 +337,11 @@ class FullCoverageTests(unittest.TestCase):
              patch.object(bot, 'select_baa_target', return_value=('423160', 'KOFR', True, [], [100.] * 252)), \
              patch.object(bot, 'get_current_price', return_value=130000), \
              patch.object(bot, 'execute_order', side_effect=fake_order), \
-             patch.object(bot, 'get_account_balance', return_value=({'423160':{'qty':5,'avg_price':110785}}, 410959, 964929)), \
+             patch.object(bot, 'get_account_balance', return_value=({'423160':{'qty':4,'avg_price':110785}}, 410959, 964929)), \
              patch.object(bot, 'assert_no_pending'):
             bot.run_baa('fake', {'423160': {'qty':6,'avg_price':110785}}, 300159, 964929)
-        self.assertEqual(calls, [('423160', 1, '01')])
-        self.assertEqual(bot.load_json(bot.BAA_STATE_FILE, {})['owned_qty'], 5)
+        self.assertEqual(calls, [('423160', 2, '01')])
+        self.assertEqual(bot.load_json(bot.BAA_STATE_FILE, {})['owned_qty'], 4)
         self.assertEqual(bot.load_json(bot.BAA_STATE_FILE, {})['last_executed_date'], '2026-10-14')
 
     def test_baa_live_mock_old_six_sold_before_buy_new_target(self):
@@ -367,9 +367,9 @@ class FullCoverageTests(unittest.TestCase):
              patch.object(bot, 'get_account_balance', return_value=({}, 964929, 964929)), \
              patch.object(bot, 'assert_no_pending'):
             bot.run_baa('fake', holdings, 300159, 964929)
-        self.assertEqual(calls, [('423160', 6, '01'), ('449170', 7, '02')])
+        self.assertEqual(calls, [('423160', 6, '01'), ('449170', 5, '02')])
         state=bot.load_json(bot.BAA_STATE_FILE, {})
-        self.assertEqual((state['target_code'], state['owned_qty']), ('449170', 7))
+        self.assertEqual((state['target_code'], state['owned_qty']), ('449170', 5))
 
     def test_baa_broker_balance_mismatch_aborts_before_any_sale(self):
         self.owned()
@@ -429,9 +429,9 @@ class FullCoverageTests(unittest.TestCase):
 
     def test_baa_live_mock_target_already_met_does_not_send_order(self):
         self.owned()
-        # Choose a target price where 6 shares exactly match the 80%*96% budget.
-        price=110800
-        self.assertEqual(int(964929*.8*.96//price), 6)
+        # Six shares fit the 60% allocation with the existing 96% cash buffer.
+        price=90000
+        self.assertEqual(int(964929*.6*.96//price), 6)
         with self.fixed_time(), patch.object(bot, 'DRY_RUN', False), \
              patch.object(bot, 'select_baa_target', return_value=('423160', 'KOFR', True, [], [100.] * 252)), \
              patch.object(bot, 'get_current_price', return_value=price), \
@@ -801,7 +801,7 @@ class StrategyAndIntegrationTests(unittest.TestCase):
             bot.main()
         self.assertGreaterEqual(reconcile.call_count, 1)
         schedule_guard.assert_called_once_with(actual_start)
-        swing.assert_called_once()
+        swing.assert_not_called()
         baa.assert_called_once()
         order.assert_not_called()
         telegram.assert_not_called()
@@ -828,7 +828,7 @@ class StrategyAndIntegrationTests(unittest.TestCase):
              patch.object(bot,'run_swing',side_effect=lambda *a,**k:timeline.append('swing')),\
              patch.object(bot,'run_baa',side_effect=lambda *a,**k:timeline.append('baa')):
             bot.main()
-        self.assertEqual(timeline,['swing','baa'])
+        self.assertEqual(timeline,['baa'])
         self.assertEqual(bot.load_json(bot.BAA_STATE_FILE,{})['owned_qty'],6)
         self.assertEqual(len(bot.read_journal()['orders']),1)
 

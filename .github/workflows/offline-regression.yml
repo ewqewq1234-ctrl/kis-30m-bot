@@ -2,16 +2,29 @@ name: Offline Ubuntu regression
 
 on:
   workflow_dispatch:
+    inputs:
+      run_dividend_screen:
+        description: 'Also run the read-only market screen with repository API secrets'
+        type: boolean
+        default: false
+      max_symbols:
+        description: 'Screen batch size; 0 = all (up to 330 minutes)'
+        type: string
+        default: '0'
   push:
     paths:
       - '*.py'
       - 'ci/**'
+      - 'dividend_value/**'
+      - 'portfolio.json'
       - 'requirements.txt'
       - '.github/workflows/**'
   pull_request:
     paths:
       - '*.py'
       - 'ci/**'
+      - 'dividend_value/**'
+      - 'portfolio.json'
       - 'requirements.txt'
       - '.github/workflows/**'
 
@@ -19,6 +32,15 @@ permissions:
   contents: read
 
 jobs:
+  optional-read-only-screen:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_dividend_screen
+    uses: ./.github/workflows/dividend-value-screen.yml
+    with:
+      max_symbols: ${{ inputs.max_symbols || '0' }}
+    secrets:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
   regression:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -56,5 +78,5 @@ jobs:
         run: python proposed/ci/run_offline_tests.py --source baseline test_bot_once test_api_resilience
       - name: Proposed full regression
         if: matrix.source == 'proposed'
-        run: python proposed/ci/run_offline_tests.py --source proposed test_bot_once test_api_resilience test_one_share test_swing_strategy test_hourly_runtime
+        run: python proposed/ci/run_offline_tests.py --source proposed test_bot_once test_api_resilience test_one_share test_swing_strategy test_hourly_runtime test_strategy_retirement test_dividend_value
 
