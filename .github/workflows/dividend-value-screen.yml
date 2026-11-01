@@ -19,10 +19,10 @@ on:
         default: '0'
         required: true
   schedule:
-    - cron: '0 0 * * 0'  # Sunday 00:00 UTC = Sunday 09:00 KST; latest completed session.
+    - cron: '0 21 * * 1'  # Monday 21:00 UTC = Tuesday 06:00 KST; latest completed session.
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: dividend-value-read-only-screen
@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          persist-credentials: true
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -56,6 +56,18 @@ jobs:
           MAX_SYMBOLS: ${{ inputs.max_symbols || '0' }}
           PYTHONUNBUFFERED: '1'
         run: python -m dividend_value.screen --max-symbols "$MAX_SYMBOLS"
+      - name: Publish complete Tuesday snapshot (no orders)
+        if: github.event_name == 'schedule'
+        shell: bash
+        run: |
+          python -m dividend_value.publish
+          cd signal-publish
+          git init -q
+          git checkout --orphan dividend-signals
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git add signals.json
+          git -c user.name=kis-bot -c user.email=kis-bot@users.noreply.github.com commit -m 'Tuesday verified dividend candidates'
+          git -c http.extraheader="$(git -C .. config --get http.https://github.com/.extraheader)" push --force origin HEAD:refs/heads/dividend-signals
       - uses: actions/cache/save@v4
         if: always()
         with:

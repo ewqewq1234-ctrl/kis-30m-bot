@@ -93,6 +93,14 @@ jobs:
             git push origin HEAD:refs/heads/bot-state
           fi
 
+      - name: Fetch latest read-only Tuesday candidate snapshot
+        if: steps.runtime.outputs.active == 'true'
+        shell: bash
+        run: |
+          if git fetch --depth=1 origin dividend-signals; then
+            git show FETCH_HEAD:signals.json > persistent_state/dividend_signals.json
+          fi
+
       - uses: actions/setup-python@v5
         if: steps.runtime.outputs.active == 'true'
         with:
@@ -103,7 +111,7 @@ jobs:
         if: steps.runtime.outputs.active == 'true'
       - run: python -m py_compile bot_once.py
         if: steps.runtime.outputs.active == 'true'
-      - run: python ci/run_offline_tests.py test_bot_once test_api_resilience test_one_share test_swing_strategy test_hourly_runtime test_strategy_retirement test_dividend_value
+      - run: python ci/run_offline_tests.py test_bot_once test_api_resilience test_one_share test_swing_strategy test_hourly_runtime test_strategy_retirement test_dividend_value test_dividend_trading
         if: steps.runtime.outputs.active == 'true'
         env:
           GITHUB_STATE_MODE: 'off'

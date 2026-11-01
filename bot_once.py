@@ -23,7 +23,8 @@ import requests
 from datetime import datetime, timedelta
 from pathlib import Path
 import pytz
-from portfolio_config import BAA_TARGET_RATIO, DIVIDEND_VALUE_TARGET_RATIO
+from portfolio_config import BAA_TARGET_RATIO, DIVIDEND_VALUE_TARGET_RATIO, PORTFOLIO
+from dividend_value import trading as dividend_trading
 
 # ==============================================================================
 # 1. 환경 변수 및 글로벌 설정
@@ -1194,6 +1195,7 @@ def rebuild_strategy_state():
     save_json(BAA_STATE_FILE, baa)
     if swing_exists or any(order.get("strategy") == "SWING" for order in entries):
         save_json(SWING_STATE_FILE, swing)
+    dividend_trading.rebuild(sys.modules[__name__])
 
 
 def reconcile_orders(token: str):
@@ -1270,8 +1272,12 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
         return False, 0
     if not DRY_RUN and now_kst().date() < LIVE_TRADING_START_DATE:
         fail(f"실거래 시작일({LIVE_TRADING_START_DATE}) 이전에는 주문을 차단합니다")
-    if order_type not in ("01", "02") or strategy != "BAA":
+    if order_type not in ("01", "02") or strategy not in ("BAA", "DIVIDEND"):
         fail("잘못된 주문 방향/전략")
+    if strategy == "DIVIDEND":
+        if not PORTFOLIO["dividend_value_orders_enabled"]:
+            fail("DIVIDEND orders disabled")
+        dividend_trading.guard_order(sys.modules[__name__], code, qty, order_type, strategy_metadata)
     if code == CODE_BULL:
         fail("삭제된 KODEX 200 전략의 자동 주문은 비활성입니다")
     if ord_dvsn not in ("00", "01") or (ord_dvsn == "00" and number(price) <= 0):
@@ -1615,7 +1621,7 @@ def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
            f"• 선정 타깃: <b>{html.escape(target_label)}</b>\n"
            f"• 카나리아 점검: {html.escape(canary_summary)}\n"
            f"• 총 평가 자산: {total_asset:,.0f}원\n"
-           f"• 배분: 공격형 BAA {BAA_TARGET_RATIO:.0%} / 배당·가치 {DIVIDEND_VALUE_TARGET_RATIO:.0%} (검색 전용·주문 비활성)\n"
+           f"• 배분: 공격형 BAA {BAA_TARGET_RATIO:.0%} / 배당·가치 {DIVIDEND_VALUE_TARGET_RATIO:.0%} (화요일 신규매수 / 실행마다 매도 점검)\n"
            f"• 현재 실행 시각: {now:%H:%M:%S} KST; 보고 전용 실행\n━━━━━━━━━━━━━━━━━━━━")
     send_telegram(msg, is_alert=recovered)
     if not FORCE_BAA:
@@ -1705,7 +1711,9 @@ def run_baa(token: str, holdings: dict, deposit: int, total_asset: int, force_ru
     if tracked_qty > holdings.get(old_code, {}).get("qty", 0):
         fail("BAA 추적 보유량과 실제 잔고 불일치")
     # Without owner record, must not liquidate user's other holdings.
-    unknown = [c for c, item in holdings.items() if c != CODE_BULL and item["qty"] > 0
+    div = dividend_trading.reconcile_ownership(sys.modules[__name__], holdings)["positions"]
+    unknown = [c for c, item in holdings.items() if c not in div
+               and c != CODE_BULL and item["qty"] > 0
                and not (c == old_code and item["qty"] == tracked_qty)]
     if unknown:
         fail(f"BAA 출처 미확인 보유 종목 {unknown}. 기존 보유 자동 매도 차단")
@@ -1844,7 +1852,7 @@ def send_hourly_session_report():
     baa = load_json(BAA_STATE_FILE, {})
     title = "장중 잠정 보고" if phase == "provisional" else "장 마감 보고"
     message = (f"📋 <b>{title}</b> / {now:%Y-%m-%d %H:%M} KST\n"
-               f"BAA {BAA_TARGET_RATIO:.0%} / 배당·가치 {DIVIDEND_VALUE_TARGET_RATIO:.0%} (검색 전용)\n"
+               f"BAA {BAA_TARGET_RATIO:.0%} / 배당·가치 {DIVIDEND_VALUE_TARGET_RATIO:.0%} (화요일 신규매수)\n"
                f"BAA 저장 종목: {html.escape(str(baa.get('target_code') or '없음'))} / "
                f"보유 {number(baa.get('owned_qty'))}주\n"
                "※ 저장 원장 기준. 현재 실계좌·종가·체결을 새로 검증한 보고가 아닙니다.")
@@ -1910,6 +1918,9 @@ def main():
         print(f">> 계좌 예수금: {deposit:,}원 | 총 평가자산: {total_asset:,}원 | 보유종목수: {len(holdings)}개")
         adopt_verified_legacy_baa(token, holdings)
         assert_retired_swing_flat(holdings)
+        if PORTFOLIO["dividend_value_orders_enabled"]:
+            holdings, deposit, tot_eval = dividend_trading.exits(
+                sys.modules[__name__], token, holdings, deposit, tot_eval)
         # Always reconcile before BAA; no automatic reorders on uncertain fills.
         assert_no_pending(token)
         # Refresh before BAA when the bot placed an order, or when BAA may trade.
@@ -1922,6 +1933,8 @@ def main():
         assert_no_pending(token)
         if ACCOUNT_ORDER_ATTEMPTS != before_baa_orders:
             holdings, deposit, tot_eval = get_account_balance(token)
+        if PORTFOLIO["dividend_value_orders_enabled"]:
+            dividend_trading.entries(sys.modules[__name__], token, holdings, deposit, tot_eval)
         if hourly:
             send_hourly_session_report()
         else:

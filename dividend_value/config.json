@@ -6,20 +6,20 @@
   "min_roe": 0.05,
   "max_debt_ratio": 1.0,
   "positive_ocf_years": 3,
-  "max_payout_ratio": 0.70,
-  "dividend_cut_threshold": 0.30,
+  "max_payout_ratio": 0.7,
+  "dividend_cut_threshold": 0.3,
   "min_yield": 0.04,
   "max_per": 10,
   "max_pbr": 1.0,
   "turnover_sessions": 20,
   "min_daily_turnover_krw": 100000000,
   "future_execution": {
-    "enabled": false,
+    "enabled": true,
     "initial_weight_of_strategy_nav": 0.03,
     "max_company_weight": 0.04,
     "max_positions": 30,
-    "max_sector_weight": 0.20,
-    "min_cash_weight": 0.10,
+    "max_sector_weight": 0.2,
+    "min_cash_weight": 0.1,
     "additional_buys": false,
     "max_order_to_daily_turnover": 0.01,
     "trailing_activation_gain": 0.15,
@@ -29,6 +29,9 @@
     "reselect_after_sell": "next_exchange_session",
     "dividend_suspension_or_cut": "pause_buys_and_review",
     "adverse_audit_or_capital_impairment": "sell_review",
-    "monitoring": "not_implemented_no_orders"
+    "monitoring": "sampled_each_trade_invocation",
+    "buy_weekday_kst": 1,
+    "scan_weekday_kst": 1,
+    "entry_batch_once_per_iso_week": true
   }
 }

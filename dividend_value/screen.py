@@ -262,8 +262,6 @@ def main(argv=None):
     cfg = json.loads(Path(args.config).read_text(encoding='utf-8'))
     cfg_hash = hashlib.sha256(Path(args.config).read_bytes()+Path(args.evidence).read_bytes()).hexdigest()
     portfolio = json.loads((ROOT / 'portfolio.json').read_text())
-    if cfg['future_execution']['enabled'] or portfolio['dividend_value_orders_enabled']:
-        raise DataError('research implementation cannot enable orders')
     holdings = json.loads(args.holdings.read_text()) if args.holdings else {}
     strategy_nav = args.account_nav * portfolio['dividend_value_target_ratio'] if args.account_nav else None
     api = PublicData(args.cache)
