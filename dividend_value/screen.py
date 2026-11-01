@@ -236,7 +236,7 @@ def export(output, rows, meta):
     items = ''.join(f'<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>' for k,v in meta.items())
     body = f'''<!doctype html><html lang="ko"><meta charset="utf-8"><title>배당·가치 조건검색</title>
 <style>body{{font:16px sans-serif;max-width:1100px;margin:40px auto;padding:0 24px}}table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:9px;text-align:left;overflow-wrap:anywhere}}th{{min-width:180px}}</style>
-<h1>배당·가치 조건검색 — {status}</h1><p>공격형 BAA 60% / 배당·가치 40% 예약. 배당·가치 주문 비활성.</p>
+<h1>배당·가치 조건검색 — {status}</h1><p>공격형 BAA 60% / 배당·가치 40%. 이 보고서는 검색 전용이며 주문은 봇에서 별도 수행합니다.</p>
 <p>미확인 자료는 REVIEW입니다. PASS 0은 모든 기업의 부적격을 뜻하지 않습니다. 미조회·검증 미완료 수를 함께 확인하세요.</p>
 <p>금액 KRW, 수익률·비율은 소수(0.04=4%). 빈 값은 누락, 0은 확인된 0. 비적용은 not_applicable.</p>
 <table>{items}</table><h2>결과 파일</h2><ul>'''

@@ -18,7 +18,7 @@ def path(bot):
 def rebuild(bot):
     state = bot.load_json(path(bot), {})
     previous = state.get('positions', {})
-    positions, exits, ids = {}, {}, set()
+    positions, exits, ids, closed_ids = {}, {}, set(), set()
     for order in bot.journal_orders():
         if order.get('strategy') != STRATEGY:
             continue
@@ -43,8 +43,6 @@ def rebuild(bot):
                 bot.fail('DIVIDEND ownership metadata missing')
             avg = amount / qty
             old = previous.get(code, {})
-            if old.get('qty') and old.get('entry_id') != oid:
-                bot.fail('DIVIDEND position identity mismatch')
             if old and (not math.isfinite(float(old.get('high', avg))) or float(old.get('high', avg)) <= 0):
                 bot.fail('DIVIDEND invalid persisted trailing peak')
             same = old.get('entry_id') == oid
@@ -57,12 +55,16 @@ def rebuild(bot):
                 bot.fail('DIVIDEND sale exceeds verified ownership')
             positions[code]['qty'] -= qty
             if not positions[code]['qty']:
+                closed_ids.add(positions[code]['entry_id'])
                 del positions[code]
                 exits[code] = order['created_at'][:10]
         else:
             bot.fail('DIVIDEND invalid journal side')
     if any(p.get('qty') and code not in positions and code not in exits for code,p in previous.items()):
         bot.fail('DIVIDEND position has no supporting journal')
+    if any(p.get('qty') and code in positions and p.get('entry_id') != positions[code]['entry_id']
+           and p.get('entry_id') not in closed_ids for code,p in previous.items()):
+        bot.fail('DIVIDEND position identity mismatch')
     state.update(positions=positions, last_exits=exits)
     if ids or path(bot).exists():
         bot.save_json(path(bot), state)
@@ -187,7 +189,7 @@ def entries(bot, token, holdings, deposit, nav):
             continue
         limit = bot.limit_buy_tick(min(price, ceiling))
         budget = min(sleeve*.03, sleeve*.04, sleeve*.20-sector_value,
-                     sleeve*.90-value, deposit*.96, turnover*.01)
+                     (sleeve*.90-value)*.96, deposit*.96, turnover*.01)
         qty = min(max(0, int(budget//limit)), int(tax_qty)) if limit > 0 else 0
         if qty <= 0:
             continue

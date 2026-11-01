@@ -429,7 +429,8 @@ class OneShareTests(unittest.TestCase):
         request.assert_not_called()
 
     def test_insufficient_cash_after_baa_sale_stops_before_purchase(self):
-        with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 11, 10))), \
+        with patch.object(bot.dividend_trading, "reconcile_ownership", return_value={"positions": {}}), \
+             patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 11, 10))), \
              patch.object(bot, "select_baa_target", return_value=("423160", "KOFR", True, [], [100.0] * 252)), \
              patch.object(bot, "get_current_price", return_value=1000), \
              patch.object(bot, "load_json", side_effect=[

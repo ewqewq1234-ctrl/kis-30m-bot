@@ -4,3 +4,4 @@ __pycache__/
 results/
 offline-state/
 *.log
+signal-publish/

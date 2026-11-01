@@ -98,3 +98,25 @@ class TradingTests(unittest.TestCase):
         with patch.dict('os.environ',GITHUB_SHA='sha'): t.entries(self.bot,'token',{},100000,100000)
         self.bot.execute_order.assert_not_called()
         self.assertNotIn('buy_week',self.files.get('/fake/dividend_state.json',{}))
+
+    def test_reentry_replays_closed_journal_without_inheriting_old_peak(self):
+        self.position()
+        self.orders += [dict(self.orders[0], id='sell', side='SELL',created_at='2026-11-03 11:00:00'),
+                        dict(self.orders[0], id='new-buy',created_at='2026-12-08 10:00:00')]
+        s=t.rebuild(self.bot)
+        self.assertEqual(s['positions']['000001']['entry_id'],'new-buy')
+        self.assertEqual(t.rebuild(self.bot)['positions']['000001']['high'],100)
+
+    def test_cash_and_turnover_limits_block_unfundable_share(self):
+        for cash,turnover in [(0,100000000),(100000,1)]:
+            self.files={};self.snapshot()
+            self.files['/fake/dividend_signals.json']['candidates'][0]['avg_turnover_20d']=turnover
+            with patch.dict('os.environ',GITHUB_SHA='sha'): t.entries(self.bot,'token',{},cash,100000)
+        self.bot.execute_order.assert_not_called()
+
+    def test_sector_at_twenty_percent_blocks_entry(self):
+        self.position();self.orders[0].update(requested_qty=80,confirmed_fill_qty=80,confirmed_fill_amt=8000)
+        self.snapshot();self.files['/fake/dividend_signals.json']['candidates'][0]['industry']='10'
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{'000001':{'qty':80}},100000,100000)
+        self.bot.execute_order.assert_not_called()

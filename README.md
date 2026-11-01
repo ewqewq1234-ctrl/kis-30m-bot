@@ -15,9 +15,9 @@
   and does not buy a defensive substitute or automatically liquidate existing
   holdings.
 - Portfolio targets are defined once in `portfolio.json`: aggressive BAA 60%
-  and dividend/value 40%. The dividend/value sleeve is reserved cash while the
-  read-only screening stage is validated; it cannot submit orders. See
-  [the screening guide](dividend_value/README.md).
+  and dividend/value 40%. Dividend/value entries run once on Tuesday using a
+  complete current scan; trailing exits are checked on every trading invocation.
+  See [automatic trading rules](dividend_value/AUTOTRADING.md).
 - KODEX 200 SWING has been removed from runtime and its executable trading
   implementation deleted. All new SWING and `069500` automatic buy/sell orders
   are rejected. Historical state/journal reconciliation remains so prior fills
@@ -82,18 +82,19 @@
 | 15:05 | `5 15 * * 1-5` | Last trade check; orders remain cut off at 15:20 |
 | 15:35 | `35 15 * * 1-5` | Report only; no strategy/order execution |
 
-## Dividend/value research (40% reserved allocation)
+## Dividend/value strategy (40% allocation)
 
-The initial stage screens official KIS/OpenDART data without orders. Missing
+The scanner reads official KIS/OpenDART data without orders. The trading bot
+places Tuesday entries and checks trailing exits on each trading invocation. Missing
 ordinary/special dividend evidence, share-class valuation evidence, unsupported
 account mappings or audit evidence result in REVIEW, not PASS. It is not yet a
-fully automated source-verification or execution system. Thresholds and future
+fully automated source-verification system. Thresholds and future
 order rules are in `dividend_value/config.json`. No current market PASS count is
 claimed without a completed credentialed scan.
 
 Run `python -m dividend_value.screen`; required research secrets are only
 `KIS_APP_KEY`, `KIS_APP_SECRET`, and `DART_API_KEY`. Account numbers are not used.
-The weekly read-only workflow runs Sunday 00:00 UTC / 09:00 KST and computes its
+The weekly read-only workflow runs Monday 21:00 UTC / Tuesday 06:00 KST and computes its
 actual latest completed exchange-session cutoff. Its downloadable artifacts
 include HTML, all four result CSVs, detailed evidence, metadata and logs.
 
