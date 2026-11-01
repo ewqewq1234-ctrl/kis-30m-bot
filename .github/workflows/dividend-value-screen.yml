@@ -1,5 +1,8 @@
 name: Dividend value read-only screen
 on:
+  push:
+    branches: ['feat/baa60-dividend40']
+    paths: ['dividend_value/**', '.github/workflows/dividend-value-screen.yml']
   workflow_call:
     inputs:
       max_symbols:
@@ -53,7 +56,7 @@ jobs:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
-          MAX_SYMBOLS: ${{ inputs.max_symbols || '0' }}
+          MAX_SYMBOLS: ${{ github.event_name == 'push' && '100' || inputs.max_symbols || '0' }}
           PYTHONUNBUFFERED: '1'
         run: python -m dividend_value.screen --max-symbols "$MAX_SYMBOLS"
       - uses: actions/cache/save@v4
