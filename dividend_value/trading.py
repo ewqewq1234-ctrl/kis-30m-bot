@@ -95,6 +95,15 @@ def guard_order(bot, code, qty, side, metadata):
 def exits(bot, token, holdings, deposit, nav):
     state = reconcile_ownership(bot, holdings)
     rules = DEFAULT_CONFIG['future_execution']
+    snapshot = bot.load_json(bot.BASE_DIR / 'dividend_signals.json', {})
+    stamp = snapshot.get('scan_date', '')
+    if stamp and stamp <= bot.now_kst().date().isoformat():
+        for code, reasons in snapshot.get('review_alerts', {}).items():
+            key = stamp + ':' + code
+            if code in state['positions'] and key not in state.get('review_alerted', []):
+                bot.send_telegram(f'DIVIDEND {code}: 공시 매도 검토 / 신규매수 중지 {reasons}', is_alert=True)
+                state.setdefault('review_alerted', []).append(key)
+        bot.save_json(path(bot), state)
     for code in list(state['positions']):
         p = state['positions'][code]
         price = bot.get_current_price(token, code)

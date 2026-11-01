@@ -17,6 +17,9 @@ def main():
     atomic_json('signal-publish/signals.json', {'as_of':meta['as_of'],
         'source_sha':os.environ['GITHUB_SHA'], 'scan_date':now.date().isoformat(),
         'partial':False,'candidates':[r for r in rows if r['status']=='PASS'],
+        'review_alerts':{r['code']: [k for k in ('no_30pct_cut','audit','capital_not_impaired')
+            if r.get('checks',{}).get(k) is False] for r in rows
+            if any(r.get('checks',{}).get(k) is False for k in ('no_30pct_cut','audit','capital_not_impaired'))},
         'review_count':meta['counts']['REVIEW']})
 
 

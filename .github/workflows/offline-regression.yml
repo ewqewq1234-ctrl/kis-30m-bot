@@ -33,6 +33,8 @@ permissions:
 
 jobs:
   optional-read-only-screen:
+    permissions:
+      contents: write
     if: github.event_name == 'workflow_dispatch' && inputs.run_dividend_screen
     uses: ./.github/workflows/dividend-value-screen.yml
     with:
