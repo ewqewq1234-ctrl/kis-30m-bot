@@ -14,12 +14,16 @@
   trend filters, BAA records the skipped selection and reason, sends an alert,
   and does not buy a defensive substitute or automatically liquidate existing
   holdings.
-- KODEX 200 (`069500`) uses the separately identified SWING strategy; the
-  former DAY intraday entry, fixed profit target, and mandatory intraday
-  behavior are disabled. New entries are limited to one share and a 30% NAV
-  former-DAY first-entry sleeve cap (30% sleeve × 50% initial weight × 96%
-  cash buffer, at most 14.4% of NAV), further bounded by available cash and the
-  broker's buyable quantity. BAA's configured 80% allocation is unchanged.
+- Portfolio targets are defined once in `portfolio.json`: aggressive BAA 60%
+  and dividend/value 40%. Dividend/value entries run once on Tuesday using a
+  complete current scan; trailing exits are checked on every trading invocation.
+  See [automatic trading rules](dividend_value/AUTOTRADING.md).
+- KODEX 200 SWING has been removed from runtime and its executable trading
+  implementation deleted. All new SWING and `069500` automatic buy/sell orders
+  are rejected. Historical state/journal reconciliation remains so prior fills
+  and unresolved orders are not forgotten. A remaining KODEX holding or nonzero
+  legacy state stops trading for manual reconciliation; it is never sold or
+  reallocated automatically.
 - The four BAA Canary assets are `360750` TIGER 미국S&P500, `251350` KODEX
   MSCI선진국, `195980` PLUS 신흥국MSCI(합성 H), and `437080` KODEX
   미국종합채권ESG액티브(H). KODEX 200 (`069500`) remains excluded from both
@@ -38,19 +42,19 @@
   provide overlapping KOFR-related exposure. Display-name updates do not
   modify historical transactions, holdings, strategy ownership, or state.
 - The aggressive BAA candidate set remains three ETFs, with `069500` excluded.
-  The 80% target allocation, 13-day rebalance interval, momentum calculation,
+  The 60% target allocation, 13-day rebalance interval, momentum calculation,
   trend filters, defensive allocation, and 96% cash buffer remain unchanged.
 - With `BAA_MODE=ATTACK`, only `133690`, `122630`, and `381180` are evaluated
   as BAA targets. Canary data/signals do not trigger defensive selection. No
   eligible attack target or unusable required candidate data blocks new BAA
   purchases; the skip reason is persisted in BAA state and alerted. `FORCE_BAA`
   remains a dry-run diagnostic override and is not the operating-mode switch.
-- BAA uses a default target of 80% of total assets in an uptrend and retains
+- BAA uses a configured target of 60% of total assets in an uptrend and retains
   the existing 50% reduction in a downtrend. Actual post-sale cash is checked
   before a follow-up purchase.
 - Weekday trade checks run at 09:05, 09:35, and every 30 minutes through
   15:05 KST (13 unique trade slots). A separate 15:35 KST report-only slot
-  skips both SWING and BAA trading code. GitHub's documented
+  skips BAA trading code. GitHub's documented
   [`timezone: Asia/Seoul` schedule setting](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
   is used directly; each slot has a unique cron and is mapped explicitly to
   its KST time. The existing single
@@ -78,40 +82,21 @@
 | 15:05 | `5 15 * * 1-5` | Last trade check; orders remain cut off at 15:20 |
 | 15:35 | `35 15 * * 1-5` | Report only; no strategy/order execution |
 
-## KODEX 200 SWING (initial, unvalidated settings)
+## Dividend/value strategy (40% allocation)
 
-Signals use 100 or more validated, unadjusted KIS daily OHLCV bars. The latest
-bar must be the prior exchange session confirmed by KIS's holiday calendar.
-Entry on the next exchange session requires a close above the preceding 20
-closes and SMA20 above SMA60. Entry is permitted only 09:10–14:30 KST, at no
-more than signal close + ATR14, with one share maximum. The deterministic
-100-session initialization window seeds ATR from the arithmetic mean of its
-first 14 valid true ranges, then applies Wilder recursion. Initial stop is
-verified average fill minus 2 × frozen entry ATR.
-The trailing stop is the greater of its previous value, the initial stop, and
-the highest eligible completed close since entry minus 3 × frozen entry ATR.
-A close below the preceding 10 closes persists a trend-exit intent. Exits are
-application-monitored and may execute below a stop after a gap or scheduling
-delay; there is no fixed take-profit or holding-period liquidation.
+The scanner reads official KIS/OpenDART data without orders. The trading bot
+places Tuesday entries and checks trailing exits on each trading invocation. Missing
+ordinary/special dividend evidence, share-class valuation evidence, unsupported
+account mappings or audit evidence result in REVIEW, not PASS. It is not yet a
+fully automated source-verification system. Thresholds and future
+order rules are in `dividend_value/config.json`. No current market PASS count is
+claimed without a completed credentialed scan.
 
-| Rule | Initial setting |
-| --- | --- |
-| Entry breakout / trend | Prior 20-session closing high / SMA20 > SMA60 |
-| Entry volatility cap | Signal close + ATR14 |
-| Initial stop | Verified fill − 2 × entry ATR14 |
-| Trailing stop | Highest eligible close − 3 × fixed entry ATR14 |
-| Trend exit | Close below the prior 10-session closing low |
-
-These are research parameters, not proven or optimized settings. Migration
-validates every historical KODEX 200 DAY/BAA order lifecycle and permits
-completed legacy activity only when its strategy-specific net position is zero,
-no conflicting order remains unresolved, BAA has no KODEX 200 ownership, and
-the normal runtime's current account snapshot is flat. It then persists an
-explicit migration-complete marker without changing the journal. Any missing
-fill/cancellation evidence, malformed lifecycle, nonzero legacy position, or
-nonzero account holding blocks SWING; legacy holdings are never adopted or
-liquidated automatically. Strategy performance and actual schedule
-reliability remain to be validated.
+Run `python -m dividend_value.screen`; required research secrets are only
+`KIS_APP_KEY`, `KIS_APP_SECRET`, and `DART_API_KEY`. Account numbers are not used.
+The weekly read-only workflow runs Monday 21:00 UTC / Tuesday 06:00 KST and computes its
+actual latest completed exchange-session cutoff. Its downloadable artifacts
+include HTML, all four result CSVs, detailed evidence, metadata and logs.
 
 ## Aggressive BAA universe review (2026-10-19 KST)
 
@@ -155,7 +140,7 @@ Public chart data sources:
 Run the offline safety suite with:
 
 ```sh
-python -m unittest -v test_bot_once.py test_api_resilience.py test_one_share.py test_swing_strategy.py
+python ci/run_offline_tests.py
 ```
 
 The Ubuntu regression workflow runs the proposed suite with outbound socket

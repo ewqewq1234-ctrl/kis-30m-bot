@@ -59,7 +59,8 @@ class OneShareTests(unittest.TestCase):
             with self.subTest(actual=actual, owned=owned, qty=qty):
                 with self.assertRaises(bot.TradeSafetyError):
                     self.attempt(actual, owned, qty)
-        self.assertEqual(self.attempt(), (False, 0))
+        with self.assertRaises(bot.TradeSafetyError):
+            self.attempt()
 
     def test_069500_day_order_is_rejected_without_post(self):
         with patch.object(bot, "api_request") as request:
@@ -73,7 +74,8 @@ class OneShareTests(unittest.TestCase):
                 self.attempt(**kwargs)
 
     def test_sell_is_not_blocked_by_one_share_buy_cap(self):
-        self.assertEqual(self.attempt(actual=1, owned=1, qty=1, side="01"), (False, 0))
+        with self.assertRaises(bot.TradeSafetyError):
+            self.attempt(actual=1, owned=1, qty=1, side="01")
 
     def test_fresh_account_verification_failure_blocks_order(self):
         with patch.object(bot, "order_window", return_value=True), \
@@ -144,7 +146,7 @@ class OneShareTests(unittest.TestCase):
         self.assertNotIn("069500", bot.ATTACK_UNIVERSE)
         self.assertIn("453850", bot.DEFENSE_UNIVERSE)
         self.assertEqual(set(bot.ATTACK_UNIVERSE), {"133690", "122630", "381180"})
-        self.assertEqual(bot.BAA_TARGET_RATIO, 0.80)
+        self.assertEqual(bot.BAA_TARGET_RATIO, 0.60)
 
     def test_comparison_metrics_use_existing_fast_baa_formula(self):
         closes = [100.0 + index for index in range(252)]
@@ -412,7 +414,7 @@ class OneShareTests(unittest.TestCase):
                 bot.run_baa("fake", {}, 100000, 100000)
         order.assert_not_called()
 
-    def test_baa_budget_uses_eighty_percent_of_total_assets(self):
+    def test_baa_budget_uses_sixty_percent_of_total_assets(self):
         closes = [100.0] * 252
         with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 11, 10))), \
         patch.object(bot, "select_baa_target", return_value=(
@@ -423,11 +425,12 @@ class OneShareTests(unittest.TestCase):
              patch.object(bot, "DRY_RUN", True), \
              patch.object(bot, "api_request") as request:
             bot.run_baa("fake", {}, 1_000_000, 1_000_000)
-        self.assertIn("768,000원", telegram.call_args.args[0])
+        self.assertIn("576,000원", telegram.call_args.args[0])
         request.assert_not_called()
 
     def test_insufficient_cash_after_baa_sale_stops_before_purchase(self):
-        with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 11, 10))), \
+        with patch.object(bot.dividend_trading, "reconcile_ownership", return_value={"positions": {}}), \
+             patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 11, 10))), \
              patch.object(bot, "select_baa_target", return_value=("423160", "KOFR", True, [], [100.0] * 252)), \
              patch.object(bot, "get_current_price", return_value=1000), \
              patch.object(bot, "load_json", side_effect=[

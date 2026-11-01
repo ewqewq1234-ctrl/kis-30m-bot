@@ -196,9 +196,9 @@ class APIResilienceTests(unittest.TestCase):
         self.assertEqual(balance_count, 2)
         self.assertEqual(pending_count, 3)
 
-    def test_swing_order_attempt_forces_balance_refresh(self):
+    def test_retired_swing_is_not_called_or_refreshes_balance(self):
         balance_count, _ = self._run_main('10:30', swing_order=True)
-        self.assertEqual(balance_count, 2)
+        self.assertEqual(balance_count, 1)
 
     def test_baa_order_attempt_forces_post_order_balance_refresh(self):
         balance_count, _ = self._run_main('11:10', baa_order=True)
