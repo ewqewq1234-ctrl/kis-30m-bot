@@ -81,12 +81,4 @@ jobs:
       - name: Proposed full regression
         if: matrix.source == 'proposed'
         run: python proposed/ci/run_offline_tests.py --source proposed test_bot_once test_api_resilience test_one_share test_swing_strategy test_hourly_runtime test_strategy_retirement test_dividend_value test_dividend_trading
-      - name: Verify official read-only API responses on feature branch
-        if: matrix.source == 'proposed' && github.event_name == 'push' && github.ref == 'refs/heads/feat/baa60-dividend40'
-        working-directory: proposed
-        env:
-          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
-          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
-          DART_API_KEY: ${{ secrets.DART_API_KEY }}
-        run: python -m dividend_value.probe
 

@@ -10,6 +10,23 @@ class RetirementTests(unittest.TestCase):
     setUp = test_bot_once.BotSafetyTests.setUp
     write = test_bot_once.BotSafetyTests.write
 
+    def test_dividend_fills_rebuild_with_baa_and_retired_ledger(self):
+        entry={'id':'div-buy','strategy':'DIVIDEND','code':'005930','side':'BUY',
+               'requested_qty':2,'confirmed_fill_qty':2,'confirmed_fill_amt':120000,
+               'created_at':'2026-11-03 10:12:00','status':'FILLED',
+               'strategy_metadata':{'corp_code':'00126380','industry':'26'}}
+        self.write('trade_history.json',{'orders':[entry]})
+        bot.rebuild_strategy_state()
+        state=bot.load_json(bot.BASE_DIR/'dividend_state.json',{})
+        self.assertEqual(state['positions']['005930']['qty'],2)
+        self.assertIsNone(bot.load_json(bot.BAA_STATE_FILE,{})['target_code'])
+        self.write('trade_history.json',{'orders':[entry,dict(entry,id='div-sell',side='SELL',
+            confirmed_fill_amt=140000,created_at='2026-11-04 10:12:00')]})
+        bot.rebuild_strategy_state()
+        state=bot.load_json(bot.BASE_DIR/'dividend_state.json',{})
+        self.assertEqual(state['positions'],{})
+        self.assertEqual(state['last_exits']['005930'],'2026-11-04')
+
     def test_allocation_split(self):
         self.assertEqual((BAA_TARGET_RATIO,DIVIDEND_VALUE_TARGET_RATIO),(.6,.4))
 
