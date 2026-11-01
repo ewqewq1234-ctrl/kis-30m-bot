@@ -1844,7 +1844,7 @@ def send_hourly_session_report():
     baa = load_json(BAA_STATE_FILE, {})
     title = "장중 잠정 보고" if phase == "provisional" else "장 마감 보고"
     message = (f"📋 <b>{title}</b> / {now:%Y-%m-%d %H:%M} KST\n"
-               f"SWING 저장 보유: {number(swing.get('owned_qty'))}주\n"
+               f"BAA {BAA_TARGET_RATIO:.0%} / 배당·가치 {DIVIDEND_VALUE_TARGET_RATIO:.0%} (검색 전용)\n"
                f"BAA 저장 종목: {html.escape(str(baa.get('target_code') or '없음'))} / "
                f"보유 {number(baa.get('owned_qty'))}주\n"
                "※ 저장 원장 기준. 현재 실계좌·종가·체결을 새로 검증한 보고가 아닙니다.")

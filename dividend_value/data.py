@@ -229,7 +229,9 @@ def disclosed(rows, as_of):
 
 
 def normalize_financial(rows, scope, year, report, as_of):
-    if not disclosed(rows, as_of):
+    if (not disclosed(rows, as_of)
+            or any(str(r.get('bsns_year')) != str(year) or r.get('reprt_code') != report for r in rows)
+            or any(r.get('currency', 'KRW') != 'KRW' for r in rows)):
         return None
     ids = {'income': 'ifrs-full_ProfitLossAttributableToOwnersOfParent' if scope == 'CFS' else 'ifrs-full_ProfitLoss',
            'equity': 'ifrs-full_EquityAttributableToOwnersOfParent' if scope == 'CFS' else 'ifrs-full_Equity'}

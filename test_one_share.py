@@ -414,7 +414,7 @@ class OneShareTests(unittest.TestCase):
                 bot.run_baa("fake", {}, 100000, 100000)
         order.assert_not_called()
 
-    def test_baa_budget_uses_eighty_percent_of_total_assets(self):
+    def test_baa_budget_uses_sixty_percent_of_total_assets(self):
         closes = [100.0] * 252
         with patch.object(bot, "now_kst", return_value=bot.KST.localize(datetime(2026, 10, 16, 11, 10))), \
         patch.object(bot, "select_baa_target", return_value=(
@@ -425,7 +425,7 @@ class OneShareTests(unittest.TestCase):
              patch.object(bot, "DRY_RUN", True), \
              patch.object(bot, "api_request") as request:
             bot.run_baa("fake", {}, 1_000_000, 1_000_000)
-        self.assertIn("768,000원", telegram.call_args.args[0])
+        self.assertIn("576,000원", telegram.call_args.args[0])
         request.assert_not_called()
 
     def test_insufficient_cash_after_baa_sale_stops_before_purchase(self):

@@ -6,6 +6,7 @@ is multiplied by four. Accounting evidence is deliberately conservative.
 import copy
 import json
 import math
+from datetime import date
 from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
 from statistics import median
@@ -30,7 +31,7 @@ def tax_quantity(taxable_dps, existing=0):
     amount = number(taxable_dps)
     if amount is None or amount <= 0:
         return None
-    unit_tax = Decimal(str(taxable_dps)) * Decimal('0.14')
+    unit_tax = Decimal(str(taxable_dps).replace(',', '')) * Decimal('0.14')
     maximum = int((Decimal('1000') / unit_tax).to_integral_value(rounding=ROUND_CEILING)) - 1
     return {'max_total_qty': maximum, 'additional_qty': max(0, maximum - existing),
             'basis': 'estimated: taxable DPS × total shares × 14% < KRW 1,000; no rounding',
@@ -97,6 +98,7 @@ def evaluate(facts, config=None, *, strategy_nav=None, existing_qty=0):
     latest = f.get('latest_balance', {})
     equity, debt, capital = map(number, (latest.get('equity_total'), latest.get('liabilities'), latest.get('capital')))
     latest_ok = latest.get('latest_disclosure_verified') is True and latest.get('unit') == 'KRW'
+    check('latest_balance_scope', True if aligned and latest.get('scope') in scopes else None)
     compare('positive_equity', equity if latest_ok else None, lambda v: v > 0)
     metrics['debt_ratio'] = debt / equity if latest_ok and equity is not None and equity > 0 and debt is not None else None
     compare('debt', metrics['debt_ratio'], lambda v: 0 <= v <= cfg['max_debt_ratio'])
@@ -130,8 +132,18 @@ def evaluate(facts, config=None, *, strategy_nav=None, existing_qty=0):
     metrics['payout_ratio'] = sum(cash) / sum(ni3) if payout_ok else None
     compare('payout', metrics['payout_ratio'], lambda v: 0 <= v <= cfg['max_payout_ratio'])
     valuation = f.get('valuation', {})
+    try:
+        period_end = date.fromisoformat(valuation.get('period_end', ''))
+        dated = period_end <= date.fromisoformat(f['as_of'])
+        if valuation.get('basis') == 'annual':
+            dated = dated and period_end == date(expected, 12, 31)
+        else:
+            period_start = date.fromisoformat(valuation.get('period_start', ''))
+            dated = dated and 364 <= (period_end - period_start).days <= 366
+    except (TypeError, ValueError, KeyError):
+        dated = False
     verified = (valuation.get('basis_verified') is True and valuation.get('share_class') == f.get('share_class')
-                and valuation.get('basis') in {'annual', 'TTM'} and valuation.get('price_date') == f.get('as_of'))
+                and valuation.get('basis') in {'annual', 'TTM'} and valuation.get('price_date') == f.get('as_of') and dated)
     eps, bps = map(number, (valuation.get('eps'), valuation.get('bps')))
     check('valuation_basis', True if verified else None)
     metrics['per'] = close / eps if verified and close and eps is not None and eps > 0 else None

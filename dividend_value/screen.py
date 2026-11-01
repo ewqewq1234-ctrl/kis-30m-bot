@@ -119,7 +119,11 @@ def financial_facts(api, facts, corp, as_of, cfg):
         dividend = api.dart('alotMatter.json', params, version=version)
         # The endpoint does not identify ordinary vs special DPS or split
         # adjustments. Preserve raw rows; require documented human verification.
-        facts['raw_dividend_reports'].append({'year': fy, 'data': dividend.get('list', [])})
+        dividend_rows = dividend.get('list', [])
+        if dividend_rows and not disclosed(dividend_rows, as_of):
+            facts['review_reasons'].append('UNVERIFIED:dividend_report_after_cutoff')
+            dividend_rows = []
+        facts['raw_dividend_reports'].append({'year': fy, 'data': dividend_rows})
     # Fetch the latest disclosed interim balance sheet without annualizing income.
     quarter_reports = [('11013', '분기보고서', '03'), ('11012', '반기보고서', '06'),
                        ('11014', '분기보고서', '09')]

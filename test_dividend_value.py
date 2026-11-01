@@ -23,9 +23,9 @@ def fixture():
             'dividend_final':True, 'share_class':'common', 'cash_dividends_parent':50,
             'payout_scope_verified':True, 'total_taxable_annual_dps':500} for y in range(2021,2026)],
         'latest_balance':{'equity_total':1000,'liabilities':500,'capital':100,
-                          'unit':'KRW','latest_disclosure_verified':True},
+                          'unit':'KRW','scope':'CFS_PARENT','latest_disclosure_verified':True},
         'valuation':{'eps':1500,'bps':12000,'basis':'annual','basis_verified':True,
-                     'share_class':'common','price_date':'2026-10-30'},
+                     'share_class':'common','price_date':'2026-10-30','period_end':'2025-12-31'},
         'audit':'적정','audit_verified':True,'avg_turnover_20d':100000000}
 
 
@@ -118,7 +118,8 @@ class DataTests(unittest.TestCase):
 
     def test_financial_cutoff_and_interim_not_annualized(self):
         row={'rcept_no':'20260901000001','account_id':'ifrs-full_ProfitLossAttributableToOwnersOfParent',
-             'sj_div':'IS','thstrm_amount':'30','thstrm_add_amount':'90'}
+             'sj_div':'IS','thstrm_amount':'30','thstrm_add_amount':'90',
+             'bsns_year':'2026','reprt_code':'11014'}
         self.assertIsNone(normalize_financial([row],'CFS',2026,'11014','2026-08-31'))
         r=normalize_financial([row],'CFS',2026,'11014','2026-10-30')
         self.assertNotIn('income',r)
@@ -177,6 +178,36 @@ class DataTests(unittest.TestCase):
             self.assertTrue(meta['partial'])
             self.assertIn('DART_API_KEY',meta['blocker'])
             self.assertIsNone(meta['as_of'])
+
+    def test_batch_resume_retries_failure_without_duplicate_successes(self):
+        with tempfile.TemporaryDirectory() as d, patch.dict('os.environ',{
+                'KIS_APP_KEY':'fake','KIS_APP_SECRET':'fake','DART_API_KEY':'fake'}):
+            client=Mock()
+            client.calls=client.cache_hits=client.bytes=0
+            client.daily.return_value=[{'date':'2026-10-30','close':100,'turnover':100}]
+            client.market_master.return_value=[{'code':'000001'},{'code':'000002'}]
+            client.corp_codes.return_value={}
+            args=['--output',d,'--cache',str(Path(d,'cache')),'--max-symbols','1']
+            with patch('dividend_value.screen.PublicData',return_value=client), \
+                 patch('dividend_value.screen.screen_stock',return_value=fixture()) as screen:
+                main(args)
+                self.assertEqual(screen.call_count,1)
+                # Second stock fails, then the next resume retries exactly it.
+                screen.side_effect=DataError('failure')
+                main(args)
+                screen.side_effect=None
+                screen.return_value=dict(fixture(),code='000002')
+                main(args)
+                rows=json.loads(Path(d,'screening_details.json').read_text(encoding='utf-8'))
+                self.assertEqual([r['code'] for r in rows],['000001','000002'])
+                self.assertFalse(any(r.get('query_failed') for r in rows))
+                self.assertEqual(screen.call_count,3)
+
+    def test_future_valuation_date_and_unverified_risk_are_review(self):
+        f=fixture(); f['valuation']['period_end']='2027-12-31'
+        self.assertEqual(evaluate(f)['status'],'REVIEW')
+        f=fixture(); f['risk_verified']=False
+        self.assertEqual(evaluate(f)['status'],'REVIEW')
 
 
 if __name__=='__main__':
