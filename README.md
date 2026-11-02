@@ -85,12 +85,12 @@
 ## Dividend/value strategy (40% allocation)
 
 The scanner reads official KIS/OpenDART data without orders. The trading bot
-places Tuesday entries and checks trailing exits on each trading invocation. Missing
-ordinary/special dividend evidence, share-class valuation evidence, unsupported
-account mappings or audit evidence result in REVIEW, not PASS. It is not yet a
-fully automated source-verification system. Thresholds and future
-order rules are in `dividend_value/config.json`. No current market PASS count is
-claimed without a completed credentialed scan.
+places Tuesday entries and checks trailing exits on each trading invocation.
+The automated screen uses reported cash dividends and KIS valuation fields
+without separate ordinary/special, split, share-class, metric-period, audit or
+accounting-scope verification. Missing required numeric fields remain REVIEW.
+Thresholds and future order rules are in `dividend_value/config.json`. No current
+market PASS count is claimed without a completed credentialed scan.
 
 Run `python -m dividend_value.screen`; required research secrets are only
 `KIS_APP_KEY`, `KIS_APP_SECRET`, and `DART_API_KEY`. Account numbers are not used.
