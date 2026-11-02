@@ -1,5 +1,6 @@
 """Build a Tuesday signal snapshot, never account data or credentials."""
 from datetime import datetime
+from datetime import date
 import json
 import os
 from pathlib import Path
@@ -12,8 +13,8 @@ def main():
     meta = json.loads((root/'run_metadata.json').read_text(encoding='utf-8'))
     rows = json.loads((root/'screening_details.json').read_text(encoding='utf-8'))
     now = datetime.now(ZoneInfo('Asia/Seoul'))
-    if now.weekday() != 1 or meta['partial'] or meta.get('blocker'):
-        raise SystemExit('No complete Tuesday scan; signal publication blocked')
+    if (now.weekday() != 1 and now.date() != date(2026, 11, 2)) or meta['partial'] or meta.get('blocker'):
+        raise SystemExit('No complete eligible-day scan; signal publication blocked')
     atomic_json('signal-publish/signals.json', {'as_of':meta['as_of'],
         'source_sha':os.environ['GITHUB_SHA'], 'scan_date':now.date().isoformat(),
         'partial':False,'candidates':[r for r in rows if r['status']=='PASS'],
