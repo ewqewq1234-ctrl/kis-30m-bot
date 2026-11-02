@@ -9,6 +9,11 @@ import os
 from .rules import DEFAULT_CONFIG
 
 STRATEGY = 'DIVIDEND'
+ONE_DAY_ENTRY_DATE = date(2026, 11, 2)
+
+
+def entry_day(now):
+    return now.weekday() == 1 or now.date() == ONE_DAY_ENTRY_DATE
 
 
 def path(bot):
@@ -89,9 +94,11 @@ def guard_order(bot, code, qty, side, metadata):
             bot.fail('DIVIDEND unverified exit intent/quantity')
     else:
         permit = state.get('buy_permits', {}).get(code, {})
-        if (bot.now_kst().weekday() != 1 or permit.get('date') != bot.now_kst().date().isoformat()
+        now = bot.now_kst()
+        if (not entry_day(now) or (now.date() == ONE_DAY_ENTRY_DATE and qty != 1)
+                or permit.get('date') != now.date().isoformat()
                 or qty != permit.get('qty') or metadata != permit.get('metadata')):
-            bot.fail('DIVIDEND buy lacks Tuesday durable permit')
+            bot.fail('DIVIDEND buy lacks dated durable permit')
 
 
 def exits(bot, token, holdings, deposit, nav):
@@ -139,8 +146,9 @@ def cooldown_complete(bot, token, last_exit, today):
 
 def entries(bot, token, holdings, deposit, nav):
     now = bot.now_kst()
-    if now.weekday() != 1 or not ('09:10' <= now.strftime('%H:%M') <= '14:30'):
+    if not entry_day(now) or not ('09:10' <= now.strftime('%H:%M') <= '14:30'):
         return
+    one_day_test = now.date() == ONE_DAY_ENTRY_DATE
     state = reconcile_ownership(bot, holdings)
     week = f'{now.isocalendar().year}-{now.isocalendar().week}'
     if state.get('buy_week') == week:
@@ -151,15 +159,16 @@ def entries(bot, token, holdings, deposit, nav):
     if (not snapshot or snapshot.get('as_of') != prev or snapshot.get('partial')
             or not expected or snapshot.get('source_sha') != expected
             or snapshot.get('scan_date') != now.date().isoformat()):
-        print('>> DIVIDEND: waiting for a complete, current Tuesday scan')
+        print('>> DIVIDEND: waiting for a complete, current scan')
         return
     rows = snapshot.get('candidates', [])
     if not isinstance(rows, list):
         bot.fail('DIVIDEND malformed candidate snapshot')
     # Once per week, including an empty candidate set. No late/restarted retry
     # of the buy batch after an uncertain order outcome.
-    state.update(buy_week=week, buy_permits={})
-    if not bot.DRY_RUN:
+    if not one_day_test:
+        state.update(buy_week=week, buy_permits={})
+    if not bot.DRY_RUN and not one_day_test:
         bot.save_json(path(bot), state)
     rules = DEFAULT_CONFIG['future_execution']
     for candidate in sorted(rows, key=lambda r:r['code']):
@@ -191,10 +200,15 @@ def entries(bot, token, holdings, deposit, nav):
         budget = min(sleeve*.03, sleeve*.04, sleeve*.20-sector_value,
                      (sleeve*.90-value)*.96, deposit*.96, turnover*.01)
         qty = min(max(0, int(budget//limit)), int(tax_qty)) if limit > 0 else 0
+        if one_day_test:
+            qty = min(qty, 1)
         if qty <= 0:
             continue
         metadata = {'corp_code':corp,'industry':sector,'signal_as_of':prev,
                     'source_sha':snapshot['source_sha']}
+        if one_day_test:
+            # Persist the weekly lock before the only permitted live order.
+            state.update(buy_week=week, buy_permits={})
         state['buy_permits'][code] = {'date':now.date().isoformat(),'qty':qty,'metadata':metadata}
         if not bot.DRY_RUN:
             bot.save_json(path(bot), state)
@@ -205,3 +219,5 @@ def entries(bot, token, holdings, deposit, nav):
             holdings, deposit, nav = bot.get_account_balance(token)
         else:
             print(f'>> [DIVIDEND DRY_RUN] eligible {code} qty={qty}; no order')
+        if one_day_test:
+            break

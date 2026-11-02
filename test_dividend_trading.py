@@ -73,6 +73,41 @@ class TradingTests(unittest.TestCase):
         t.entries(self.bot,'token',{},100000,100000)
         self.bot.execute_order.assert_called_once()
 
+    def test_november_2_one_share_entry_and_durable_weekly_lock(self):
+        self.bot.now_kst=lambda:datetime(2026,11,2,11,12)
+        self.bot.previous_exchange_session=lambda *a:date(2026,10,30)
+        self.snapshot(as_of='2026-10-30',scan_date='2026-11-02')
+        self.files['/fake/dividend_signals.json']['candidates'].append(
+            dict(self.files['/fake/dividend_signals.json']['candidates'][0],code='000003'))
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+            t.entries(self.bot,'token',{},100000,100000)
+        self.bot.execute_order.assert_called_once()
+        self.assertEqual(self.bot.execute_order.call_args.args[2],1)
+        state=self.files['/fake/dividend_state.json']
+        self.assertEqual(state['buy_week'],'2026-45')
+        self.assertEqual(state['buy_permits']['000002']['qty'],1)
+        t.guard_order(self.bot,'000002',1,'02',state['buy_permits']['000002']['metadata'])
+        with self.assertRaises(ValueError):
+            t.guard_order(self.bot,'000002',2,'02',state['buy_permits']['000002']['metadata'])
+
+    def test_november_2_no_pass_does_not_consume_tuesday(self):
+        self.bot.now_kst=lambda:datetime(2026,11,2,11,12)
+        self.bot.previous_exchange_session=lambda *a:date(2026,10,30)
+        self.snapshot(as_of='2026-10-30',scan_date='2026-11-02')
+        self.files['/fake/dividend_signals.json']['candidates']=[]
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.assertNotIn('buy_week',self.files.get('/fake/dividend_state.json',{}))
+        self.bot.execute_order.assert_not_called()
+
+    def test_november_3_still_needs_tuesday_snapshot(self):
+        self.bot.now_kst=lambda:datetime(2026,11,3,11,12)
+        self.snapshot(as_of='2026-10-30',scan_date='2026-11-02')
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.bot.execute_order.assert_not_called()
+
     def test_stale_partial_or_foreign_code_snapshot_blocks_buy(self):
         for update in ({'as_of':'2026-10-30'},{'partial':True},{'source_sha':'old'},{'scan_date':'2026-11-02'}):
             self.snapshot(**update)
