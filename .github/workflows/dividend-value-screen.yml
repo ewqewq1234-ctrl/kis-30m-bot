@@ -18,6 +18,9 @@ on:
         description: '0 = all; positive = partial batch, resume on the same cutoff'
         default: '0'
         required: true
+  push:
+    branches: [main]
+    paths: [.github/workflows/dividend-value-screen.yml]
   schedule:
     - cron: '0 21 * * 1'  # Monday 21:00 UTC = Tuesday 06:00 KST; latest completed session.
 
@@ -57,7 +60,7 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: python -m dividend_value.screen --max-symbols "$MAX_SYMBOLS"
       - name: Publish complete Tuesday snapshot (no orders)
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || github.event_name == 'push'
         shell: bash
         run: |
           python -m dividend_value.publish
