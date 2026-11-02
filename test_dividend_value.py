@@ -7,10 +7,10 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from dividend_value.data import (PublicData, DataError, normalize_financial,
-                                 parse_master, WIDTHS, atomic_json)
-from dividend_value.rules import evaluate, tax_quantity, ttm_from_ytd
-from dividend_value.screen import export, main, reviewed_evidence, apply_evidence
+from dividend_value.data import (PublicData, DataError, normalize_dividend,
+                                 normalize_financial, parse_master, WIDTHS)
+from dividend_value.rules import evaluate, tax_quantity
+from dividend_value.screen import export, main
 
 
 def fixture():
@@ -18,15 +18,12 @@ def fixture():
         'share_class':'common', 'as_of':'2026-10-30', 'expected_fiscal_year':2025,
         'close':10000, 'risk_verified':True, 'risk_flagged':False,
         'annual':[{'year':y, 'scope':'CFS_PARENT', 'unit':'KRW', 'income':100,
-            'equity_open':1000, 'equity':1000, 'ocf':120, 'ordinary_dps':500,
-            'special_dividend_verified':True, 'split_adjustment_verified':True,
-            'dividend_final':True, 'share_class':'common', 'cash_dividends_parent':50,
-            'payout_scope_verified':True, 'total_taxable_annual_dps':500} for y in range(2021,2026)],
+            'equity_open':1000, 'equity':1000, 'ocf':120, 'cash_dps':500,
+            'cash_dividends':50, 'total_taxable_annual_dps':500} for y in range(2021,2026)],
         'latest_balance':{'equity_total':1000,'liabilities':500,'capital':100,
                           'unit':'KRW','scope':'CFS_PARENT','latest_disclosure_verified':True},
-        'valuation':{'eps':1500,'bps':12000,'basis':'annual','basis_verified':True,
-                     'share_class':'common','price_date':'2026-10-30','period_end':'2025-12-31'},
-        'audit':'적정','audit_verified':True,'avg_turnover_20d':100000000}
+        'valuation':{'per':6.67,'pbr':0.83,'eps':1500,'bps':12000},
+        'avg_turnover_20d':100000000}
 
 
 class RulesTests(unittest.TestCase):
@@ -39,53 +36,63 @@ class RulesTests(unittest.TestCase):
 
     def test_history_or_high_yield_does_not_waive_other_rules(self):
         f=fixture()
-        f['annual'][0]['ordinary_dps']=0
-        for a in f['annual'][-3:]: a['ordinary_dps']=800
+        f['annual'][0]['cash_dps']=0
+        for a in f['annual'][-3:]: a['cash_dps']=800
         r=evaluate(f)
         self.assertEqual(r['status'],'PASS')
         self.assertEqual(r['metrics']['history_method'],'high_yield')
         f['annual'][0]['income']=-1
         self.assertEqual(evaluate(f)['status'],'FAIL')
 
-    def test_special_dividend_excluded_from_yield_but_taxable(self):
+    def test_reported_cash_dividend_needs_no_manual_classification(self):
         f=fixture()
         for a in f['annual']:
-            a['ordinary_dps']=300
+            a['cash_dps']=300
             a['total_taxable_annual_dps']=1000
         r=evaluate(f)
         self.assertFalse(r['checks']['dividend_yield'])
         self.assertEqual(r['metrics']['tax_quantity']['max_total_qty'],7)
-        f['annual'][-1]['special_dividend_verified']=False
+        f['annual'][-1].pop('cash_dps')
         self.assertIsNone(evaluate(f)['metrics']['base_dividend'])
+
+    def test_clearly_corrupt_reported_dps_is_not_used(self):
+        f=fixture()
+        f['annual'][-1]['cash_dps']=1000000000
+        f['annual'][-1]['total_taxable_annual_dps']=1000000000
+        r=evaluate(f)
+        self.assertEqual(r['status'],'REVIEW')
+        self.assertIsNone(r['metrics']['base_dividend'])
+        self.assertIsNone(r['metrics']['tax_quantity'])
 
     def test_exact_30_percent_cut_is_rejected(self):
         f=fixture()
-        f['annual'][-2]['ordinary_dps']=1000
-        f['annual'][-1]['ordinary_dps']=700
+        f['annual'][-2]['cash_dps']=1000
+        f['annual'][-1]['cash_dps']=700
         self.assertFalse(evaluate(f)['checks']['no_30pct_cut'])
-        f['annual'][-1]['ordinary_dps']=700.01
+        f['annual'][-1]['cash_dps']=700.01
         self.assertTrue(evaluate(f)['checks']['no_30pct_cut'])
 
-    def test_negative_eps_fails_but_missing_is_review(self):
-        f=fixture(); f['valuation']['eps']=-1
+    def test_kis_valuation_threshold_fails_and_missing_is_review(self):
+        f=fixture(); f['valuation']['per']=11
         self.assertEqual(evaluate(f)['status'],'FAIL')
-        f['valuation']['eps']=None
+        f=fixture(); f['valuation']['per']=None; f['valuation']['eps']=None
         self.assertEqual(evaluate(f)['status'],'REVIEW')
 
-    def test_preferred_share_mismatch_and_unverified_basis_review(self):
+    def test_share_class_and_valuation_period_metadata_are_not_gates(self):
         f=fixture(); f['share_class']='preferred'
-        self.assertEqual(evaluate(f)['status'],'REVIEW')
-        f=fixture(); f['valuation']['basis_verified']=False
-        self.assertEqual(evaluate(f)['status'],'REVIEW')
+        f['valuation'].update(basis_verified=False, basis='unknown',
+                              price_date='2099-01-01', share_class='common')
+        self.assertEqual(evaluate(f)['status'],'PASS')
 
-    def test_missing_risk_or_audit_cannot_pass(self):
-        for key in ('risk_verified','audit_verified'):
-            f=fixture(); f.pop(key)
-            self.assertEqual(evaluate(f)['status'],'REVIEW')
+    def test_missing_risk_cannot_pass_but_audit_is_not_evaluated(self):
+        f=fixture(); f.pop('risk_verified')
+        self.assertEqual(evaluate(f)['status'],'REVIEW')
+        r=evaluate(fixture())
+        self.assertNotIn('audit',r['checks'])
 
-    def test_mixed_accounting_scope_cannot_pass(self):
+    def test_mixed_accounting_scope_is_not_a_gate(self):
         f=fixture(); f['annual'][0]['scope']='OFS'
-        self.assertEqual(evaluate(f)['status'],'REVIEW')
+        self.assertEqual(evaluate(f)['status'],'PASS')
 
     def test_strict_tax_boundary_existing_holdings_and_no_float_rounding(self):
         self.assertEqual(tax_quantity(1000)['max_total_qty'],7)
@@ -94,12 +101,6 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(tax_quantity(100)['max_total_qty'],71)
         self.assertIsNone(tax_quantity(None))
         with self.assertRaises(ValueError): tax_quantity(100,-1)
-
-    def test_ttm_uses_comparable_cumulative_not_quarter_annualization(self):
-        self.assertEqual(ttm_from_ytd(100,90,60,current_months=9,prior_months=9,
-                         same_scope=True,same_unit=True),130)
-        self.assertIsNone(ttm_from_ytd(100,30,60,current_months=3,prior_months=9,
-                         same_scope=True,same_unit=True))
 
     def test_known_failure_remains_fail_when_other_data_missing(self):
         f=fixture(); f['annual']=[]; f['avg_turnover_20d']=0
@@ -151,13 +152,16 @@ class DataTests(unittest.TestCase):
                 self.assertEqual(req.call_count,1)
             self.assertNotIn('super-secret',''.join(p.read_text() for p in Path(d).glob('*.json')))
 
-    def test_manual_evidence_requires_provenance_and_cannot_replace_income(self):
-        with tempfile.TemporaryDirectory() as d:
-            p=Path(d,'evidence.json')
-            atomic_json(p,{'stocks':{'000001':{'as_of':'2026-10-30','fields':{}}}})
-            with self.assertRaises(DataError): reviewed_evidence(p,'000001','2026-10-30')
-            with self.assertRaises(DataError):
-                apply_evidence(fixture(),{'provenance':{},'fields':{'annual':[{'year':2025,'income':999}]}})
+    def test_dividend_rows_are_automatic_and_class_agnostic(self):
+        base={'rcept_no':'20260312000001','stlm_dt':'2025-12-31'}
+        rows=[{**base,'se':'주당 현금배당금(원)','stock_knd':'보통주','thstrm':'500'},
+              {**base,'se':'주당 현금배당금(원)','stock_knd':'우선주','thstrm':'550'},
+              {**base,'se':'현금배당금총액(백만원)','stock_knd':'-','thstrm':'10'}]
+        result=normalize_dividend(rows,2025,'2026-10-30')
+        self.assertEqual(result['cash_dps'],500)
+        self.assertEqual(result['total_taxable_annual_dps'],500)
+        self.assertEqual(result['cash_dividends'],10000000)
+        self.assertEqual(normalize_dividend(rows,2025,'2026-01-01'),{})
 
     def test_export_counts_no_thirty_stock_truncation_and_html_escape(self):
         with tempfile.TemporaryDirectory() as d:
@@ -203,9 +207,7 @@ class DataTests(unittest.TestCase):
                 self.assertFalse(any(r.get('query_failed') for r in rows))
                 self.assertEqual(screen.call_count,3)
 
-    def test_future_valuation_date_and_unverified_risk_are_review(self):
-        f=fixture(); f['valuation']['period_end']='2027-12-31'
-        self.assertEqual(evaluate(f)['status'],'REVIEW')
+    def test_unverified_risk_is_review(self):
         f=fixture(); f['risk_verified']=False
         self.assertEqual(evaluate(f)['status'],'REVIEW')
 

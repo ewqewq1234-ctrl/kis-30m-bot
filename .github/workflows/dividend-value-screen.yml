@@ -44,7 +44,7 @@ jobs:
           python-version: '3.11'
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Offline screening rules and API boundary tests
+      - name: Offline automated-data screening rules and API boundary tests
         run: python ci/run_offline_tests.py test_dividend_value
       - uses: actions/cache/restore@v4
         with:

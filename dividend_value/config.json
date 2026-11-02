@@ -28,7 +28,7 @@
     "reentry_cooldown_sessions": 20,
     "reselect_after_sell": "next_exchange_session",
     "dividend_suspension_or_cut": "pause_buys_and_review",
-    "adverse_audit_or_capital_impairment": "sell_review",
+    "capital_impairment": "sell_review",
     "monitoring": "sampled_each_trade_invocation",
     "buy_weekday_kst": 1,
     "scan_weekday_kst": 1,

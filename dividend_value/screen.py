@@ -14,57 +14,11 @@ from pathlib import Path
 import time
 from zoneinfo import ZoneInfo
 
-from .data import PublicData, DataError, atomic_json, normalize_financial, disclosed, PRICE
+from .data import (PublicData, DataError, atomic_json, normalize_dividend,
+                   normalize_financial, disclosed, PRICE)
 from .rules import DEFAULT_CONFIG, evaluate, number
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def reviewed_evidence(path, code, as_of):
-    """Manual decisions require dated source documents, not guesses from yield spikes."""
-    evidence = json.loads(Path(path).read_text(encoding='utf-8')).get('stocks', {}).get(code)
-    if not evidence:
-        return {}
-    allowed = {'annual', 'valuation', 'latest_balance', 'audit', 'audit_verified',
-               'taxable_payment_dps', 'risk_verified', 'risk_flagged'}
-    if (evidence.get('as_of') != as_of or not evidence.get('reviewed_by')
-            or not evidence.get('reason') or not evidence.get('sources')
-            or not evidence.get('published_at') or evidence['published_at'] > as_of
-            or not evidence.get('checked_at') or evidence['checked_at'] < evidence['published_at']):
-        raise DataError('manual evidence missing dated provenance or outside cutoff')
-    for source in evidence['sources']:
-        from urllib.parse import urlparse
-        parsed = urlparse(source)
-        if parsed.scheme != 'https' or parsed.hostname not in {'dart.fss.or.kr', 'opendart.fss.or.kr',
-                'kind.krx.co.kr', 'apiportal.koreainvestment.com'}:
-            raise DataError('manual evidence must cite official disclosure sources')
-    fields = evidence.get('fields', {})
-    if set(fields) - allowed:
-        raise DataError('manual evidence attempts to replace market identity/price')
-    return {'fields': fields, 'provenance': {k: v for k, v in evidence.items() if k != 'fields'}}
-
-
-def apply_evidence(facts, evidence):
-    if not evidence:
-        return facts
-    fields = evidence['fields']
-    by_year = {r['year']: r for r in facts.get('annual', [])}
-    for update in fields.get('annual', []):
-        year = update['year']
-        if year not in by_year:
-            raise DataError('manual annual evidence cannot invent a missing financial report')
-        allowed = {'year','ordinary_dps','total_taxable_annual_dps','special_dividend_verified',
-                   'split_adjustment_verified','dividend_final','share_class',
-                   'cash_dividends_parent','payout_scope_verified'}
-        if set(update) - allowed:
-            raise DataError('manual dividend evidence cannot replace accounting scope or income')
-        by_year[year].update(update)
-    facts['annual'] = sorted(by_year.values(), key=lambda r: r['year'])
-    for key, value in fields.items():
-        if key != 'annual':
-            facts[key] = value
-    facts['manual_evidence'] = evidence['provenance']
-    return facts
 
 
 def financial_facts(api, facts, corp, as_of, cfg):
@@ -117,12 +71,12 @@ def financial_facts(api, facts, corp, as_of, cfg):
             for r in normalized['rcept_nos']:
                 facts['sources'].append('https://dart.fss.or.kr/dsaf001/main.do?rcpNo=' + r)
         dividend = api.dart('alotMatter.json', params, version=version)
-        # The endpoint does not identify ordinary vs special DPS or split
-        # adjustments. Preserve raw rows; require documented human verification.
         dividend_rows = dividend.get('list', [])
         if dividend_rows and not disclosed(dividend_rows, as_of):
             facts['review_reasons'].append('UNVERIFIED:dividend_report_after_cutoff')
             dividend_rows = []
+        if normalized:
+            normalized.update(normalize_dividend(dividend_rows, fy, as_of))
         facts['raw_dividend_reports'].append({'year': fy, 'data': dividend_rows})
     # Fetch the latest disclosed interim balance sheet without annualizing income.
     quarter_reports = [('11013', '분기보고서', '03'), ('11012', '반기보고서', '06'),
@@ -142,23 +96,10 @@ def financial_facts(api, facts, corp, as_of, cfg):
             facts['latest_balance'] = dict(latest, latest_disclosure_verified=True)
     elif latest_scope and any('사업보고서' in r.get('report_nm','') and f'({year}.12)' in r.get('report_nm','') for r in disclosures):
         facts['latest_balance']['latest_disclosure_verified'] = True
-    audit_rows = api.dart('accnutAdtorNmNdAdtOpinion.json', {'corp_code':corp,
-        'bsns_year':str(year), 'reprt_code':'11011'}, version=version).get('list', [])
-    facts['raw_audit_reports'] = audit_rows
-    current = [r for r in audit_rows if str(r.get('bsns_year')) == str(year)
-               or '당기' in str(r.get('bsns_year',''))]
-    opinions = {r.get('adt_opinion') for r in current}
-    if disclosed(current, as_of) and len(opinions) == 1 and None not in opinions and '' not in opinions:
-        opinion = opinions.pop().strip()
-        # Do not turn arbitrary explanatory text into an adverse opinion.
-        if opinion in {'적정','한정','부적정','의견거절'}:
-            facts.update(audit=opinion, audit_verified=True)
-    # Special dividends and per-share bases still need evidence. Absence is
-    # REVIEW, never an inferred ordinary payout or clean opinion.
     return facts
 
 
-def screen_stock(api, stock, corp_codes, as_of, evidence_path, cfg):
+def screen_stock(api, stock, corp_codes, as_of, cfg):
     f = dict(stock, as_of=as_of, review_reasons=list(stock.get('review_reasons', [])),
              sources=list(stock.get('sources', [])))
     f['corp_code'] = corp_codes.get(f['code'])
@@ -172,9 +113,7 @@ def screen_stock(api, stock, corp_codes, as_of, evidence_path, cfg):
     f['sources'].append('KIS inquire-daily-itemchartprice: ' + as_of)
     quote = api.kis(PRICE, {'FID_COND_MRKT_DIV_CODE': 'J', 'FID_INPUT_ISCD': f['code']}).get('output', {})
     f['kis_indicative_valuation'] = {key: quote.get(key) for key in ('per', 'pbr', 'eps', 'bps', 'stac_month')}
-    f['valuation'] = {'eps': number(quote.get('eps')), 'bps': number(quote.get('bps')),
-                      'basis': 'unknown_KIS_period', 'basis_verified': False,
-                      'share_class': f['share_class'], 'price_date': as_of}
+    f['valuation'] = {key: number(quote.get(key)) for key in ('per', 'pbr', 'eps', 'bps')}
     if not f.get('corp_code'):
         f['review_reasons'].append('UNVERIFIED:DART_corporate_mapping')
         return f
@@ -189,11 +128,9 @@ def screen_stock(api, stock, corp_codes, as_of, evidence_path, cfg):
         return f  # Proven liquidity failure; avoid all historical requests.
     if ((indicative[0] is not None and indicative[0] > cfg['max_per']) or
             (indicative[1] is not None and indicative[1] > cfg['max_pbr'])):
-        f['review_reasons'].append('UNVERIFIED:indicative_valuation_prefilter_requires_period_confirmation')
-        # Unknown metric periods cannot prove FAIL. Explicitly retain in REVIEW.
-        return f
+        return f  # Automated KIS valuation failure; avoid historical requests.
     financial_facts(api, f, f['corp_code'], as_of, cfg)
-    return apply_evidence(f, reviewed_evidence(evidence_path, f['code'], as_of))
+    return f
 
 
 def export(output, rows, meta):
@@ -241,7 +178,7 @@ def export(output, rows, meta):
 <p>금액 KRW, 수익률·비율은 소수(0.04=4%). 빈 값은 누락, 0은 확인된 0. 비적용은 not_applicable.</p>
 <table>{items}</table><h2>결과 파일</h2><ul>'''
     body += ''.join(f'<li><a href="{name}">{name}</a></li>' for name in [*groups, 'screening_details.json', 'run_metadata.json', 'execution.log'])
-    body += '</ul><p>ROE=순이익/평균 귀속자본; 부채비율=부채/총자본; 배당성향=3년 현금배당합/동일귀속 순이익합. 배당 D=min(최근 보통배당,3년 중앙값). 연간 주당지표는 TTM으로 표시하지 않습니다. 세액은 지급분×수량×14%의 절사 전 추정치이며 증권사 합산·절사 처리는 미확인입니다.</p></html>'
+    body += '</ul><p>ROE=순이익/평균자본; 부채비율=부채/총자본; 배당성향=3년 DART 현금배당합/순이익합. 배당 D=min(최근 DART 현금배당,3년 중앙값). KIS 가치지표와 DART 배당은 기간·주식종류·특별배당·분할을 추가 검증하지 않습니다. 세액은 보고된 연간 현금배당×수량×14%의 절사 전 추정치입니다.</p></html>'
     (output / 'summary.html').write_text(body, encoding='utf-8')
 
 
@@ -250,7 +187,6 @@ def main(argv=None):
     parser.add_argument('--output', default='results/dividend-value')
     parser.add_argument('--cache', default='.screen-cache')
     parser.add_argument('--config', default=str(Path(__file__).with_name('config.json')))
-    parser.add_argument('--evidence', default=str(Path(__file__).with_name('evidence.json')))
     parser.add_argument('--as-of', help='latest completed exchange session only; historical scans unsupported')
     parser.add_argument('--max-symbols', type=int, default=0, help='0=all; resume same cutoff/config on next run')
     parser.add_argument('--account-nav', type=float, help='total NAV; dividend strategy receives 40%%')
@@ -260,7 +196,7 @@ def main(argv=None):
         parser.error('max-symbols must be >=0; account NAV must be positive')
     now = datetime.now(ZoneInfo('Asia/Seoul'))
     cfg = json.loads(Path(args.config).read_text(encoding='utf-8'))
-    cfg_hash = hashlib.sha256(Path(args.config).read_bytes()+Path(args.evidence).read_bytes()).hexdigest()
+    cfg_hash = hashlib.sha256(Path(args.config).read_bytes()).hexdigest()
     portfolio = json.loads((ROOT / 'portfolio.json').read_text())
     holdings = json.loads(args.holdings.read_text()) if args.holdings else {}
     strategy_nav = args.account_nav * portfolio['dividend_value_target_ratio'] if args.account_nav else None
@@ -277,7 +213,7 @@ def main(argv=None):
     meta = {'executed_kst': now.isoformat(), 'as_of': None, 'universe_total': 0,
             'universe_verified': False, 'orders_enabled': False,
             'account_nav_provided': args.account_nav is not None,
-            'freshness': 'KIS completed daily bars; DART receipts limited to cutoff; manual evidence required for unresolved items',
+            'freshness': 'KIS completed daily bars; OpenDART annual reports limited to cutoff; automated fields only',
             'config_sha256': cfg_hash}
     checkpoint = None
     try:
@@ -311,7 +247,7 @@ def main(argv=None):
                 break
             attempted += 1
             try:
-                facts = screen_stock(api, stock, corp_codes, as_of, args.evidence, cfg)
+                facts = screen_stock(api, stock, corp_codes, as_of, cfg)
                 row = evaluate(facts, cfg, strategy_nav=strategy_nav, existing_qty=holdings.get(stock['code'],0))
                 row['query_complete'] = True
             except (DataError, ValueError, KeyError):

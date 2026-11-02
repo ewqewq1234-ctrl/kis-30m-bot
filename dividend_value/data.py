@@ -20,7 +20,7 @@ PRICE = '/uapi/domestic-stock/v1/quotations/inquire-price'
 DAILY = '/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice'
 ALLOWED_GET = {KIS + PRICE, KIS + DAILY} | {
     DART + '/' + name for name in ('corpCode.xml', 'company.json', 'list.json',
-        'fnlttSinglAcntAll.json', 'alotMatter.json', 'accnutAdtorNmNdAdtOpinion.json')
+        'fnlttSinglAcntAll.json', 'alotMatter.json')
 } | {MASTER + market + '_code.mst.zip' for market in ('kospi', 'kosdaq')}
 
 
@@ -226,6 +226,33 @@ def account(rows, account_id, statement, field='thstrm_amount'):
 def disclosed(rows, as_of):
     return bool(rows) and all(str(r.get('rcept_no', ''))[:8].isdigit()
                               and str(r['rcept_no'])[:8] <= as_of.replace('-', '') for r in rows)
+
+
+def normalize_dividend(rows, year, as_of):
+    """Extract class-agnostic annual cash dividend values from OpenDART.
+
+    The minimum numeric DPS across reported stock kinds is used so the screen
+    does not require a common/preferred mapping and does not overstate yield.
+    No ordinary/special or split-adjustment inference is attempted.
+    """
+    if not disclosed(rows, as_of):
+        return {}
+    current = [r for r in rows if str(r.get('stlm_dt', '')).startswith(f'{year}-')]
+    if not current:
+        return {}
+    dps = [number(r.get('thstrm')) for r in current
+           if str(r.get('se', '')).strip() == '주당 현금배당금(원)']
+    dps = [v for v in dps if v is not None and v >= 0]
+    totals = {number(r.get('thstrm')) for r in current
+              if str(r.get('se', '')).strip() == '현금배당금총액(백만원)'}
+    totals.discard(None)
+    result = {}
+    if dps:
+        result['cash_dps'] = min(dps)
+        result['total_taxable_annual_dps'] = min(dps)
+    if len(totals) == 1:
+        result['cash_dividends'] = totals.pop() * 1_000_000
+    return result
 
 
 def normalize_financial(rows, scope, year, report, as_of):
