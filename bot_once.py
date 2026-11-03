@@ -62,7 +62,7 @@ RUN_REPORT_ONLY_RAW = os.getenv("RUN_REPORT_ONLY", "N").strip().upper()
 RUN_REPORT_ONLY = RUN_REPORT_ONLY_RAW == "Y"
 BAA_MODE = os.getenv("BAA_MODE", "AUTO").strip().upper()
 # FORCE_BAA is diagnostic only. It never bypasses market or live-order guards.
-ORDER_POLL_SECONDS = 3
+ORDER_POLL_SECONDS = 15
 MAX_DAILY_LOSS_RATIO = float(os.getenv("MAX_DAILY_LOSS_RATIO", "0.02"))
 MARKET_START = "09:00"
 MARKET_END = "15:20"  # conservative KRX ordinary-order cut-off; check broker-specific schedule
@@ -458,13 +458,23 @@ def check_daily_loss(token: str, allow_sell=False):
 # ==============================================================================
 # 3. KIS API 시세/잔고/주문 집행 + 체결 확인
 # ==============================================================================
-def get_current_price(token: str, code: str):
+def get_current_quote(token: str, code: str):
     result, _ = api_request("GET", "/uapi/domestic-stock/v1/quotations/inquire-price", token,
                             tr_id="FHKST01010100", params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
-    price = number((result.get("output") or {}).get("stck_prpr"))
+    output = result.get("output") or {}
+    price = number(output.get("stck_prpr"))
     if price <= 0:
         fail(f"현재가 조회 결과 비정상: {code}")
-    return price
+    book, _ = api_request("GET", "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn", token,
+                          tr_id="FHKST01010200", params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
+    quote = book.get("output1") or {}
+    ask = number(quote.get("askp1"))
+    ask_qty = number(quote.get("askp_rsqn1"))
+    return price, ask if ask > 0 and ask_qty > 0 else None
+
+
+def get_current_price(token: str, code: str):
+    return get_current_quote(token, code)[0]
 
 
 def get_account_balance(token: str):
@@ -1335,8 +1345,8 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
         fail(f"[{action_name}] 응답 주문번호 누락: 자동 재주문 금지")
     update_journal(key, status="ACCEPTED", odno=odno)
     print(f">> ✅ [{action_name}] 접수 성공! 종목: {code} | 수량: {qty}주 | 주문번호: {odno} (체결 미확정)")
-    for _ in range(ORDER_POLL_SECONDS):
-        time.sleep(1)
+    for _ in range(ORDER_POLL_SECONDS // 2):
+        time.sleep(2)
         reconcile_orders(token)
         entry = next(x for x in journal_orders() if x.get("id") == key)
         if entry["status"] == "FILLED":
