@@ -175,7 +175,7 @@ def durable_checkpoint(filepath):
     if os.getenv("GITHUB_STATE_MODE") != "git":
         return
     filepath = Path(filepath).resolve()
-    if filepath.name not in {"trade_history.json", "day_state.json", "swing_state.json", "baa_state.json", "risk_state.json", "holiday_cache.json", "schedule_state.json", "token_cache.secure"}:
+    if filepath.name not in {"trade_history.json", "day_state.json", "swing_state.json", "baa_state.json", "dividend_state.json", "risk_state.json", "holiday_cache.json", "schedule_state.json", "token_cache.secure"}:
         return
     if filepath.parent != BASE_DIR:
         raise TradeSafetyError("상태 파일이 지정된 영구 저장소 밖에 있습니다")
@@ -1215,11 +1215,33 @@ def reconcile_orders(token: str):
     pending = [o for o in orders if o.get("status") not in ("FILLED", "REJECTED", "CANCELED")]
     if not pending:
         return
-    days = sorted(set(o.get("created_at", "")[:10].replace("-", "") for o in pending))
-    if any(day != now_kst().strftime("%Y%m%d") for day in days):
-        fail("전일 이전의 미확정 주문이 있습니다. 원장 대조 후 수동 정리 필요")
-    rows = get_order_records(token)
+    today = now_kst().date()
+    today_key = today.strftime("%Y%m%d")
+    rows_by_day = {}
     for entry in pending:
+        created = entry.get("created_at", "")[:10]
+        try:
+            order_day = datetime.strptime(created, "%Y-%m-%d").date()
+        except ValueError:
+            fail("미확정 주문 날짜 형식 오류")
+        is_today = order_day == today
+        resumable_dividend = (
+            entry.get("strategy") == "DIVIDEND"
+            and entry.get("side") == "BUY"
+            and entry.get("status") in {"ACCEPTED", "PARTIAL"}
+            and bool(entry.get("odno"))
+            and order_day == today - timedelta(days=1)
+            and order_day.weekday() == 1
+            and today.weekday() == 2
+        )
+        if not is_today and not resumable_dividend:
+            fail("전일 이전의 미확정 주문이 있습니다. 원장 대조 후 수동 정리 필요")
+        day = order_day.strftime("%Y%m%d")
+        if day not in rows_by_day:
+            rows_by_day[day] = get_order_records(token, day=day)
+    for entry in pending:
+        order_day_key = entry.get("created_at", "")[:10].replace("-", "")
+        rows = rows_by_day[order_day_key]
         odno = str(entry.get("odno") or "")
         if not odno:
             # Unknown POST outcomes cannot be retried safely.
