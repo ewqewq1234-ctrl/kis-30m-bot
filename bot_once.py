@@ -458,23 +458,23 @@ def check_daily_loss(token: str, allow_sell=False):
 # ==============================================================================
 # 3. KIS API 시세/잔고/주문 집행 + 체결 확인
 # ==============================================================================
-def get_current_quote(token: str, code: str):
+def get_current_price(token: str, code: str):
     result, _ = api_request("GET", "/uapi/domestic-stock/v1/quotations/inquire-price", token,
                             tr_id="FHKST01010100", params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
-    output = result.get("output") or {}
-    price = number(output.get("stck_prpr"))
+    price = number((result.get("output") or {}).get("stck_prpr"))
     if price <= 0:
         fail(f"현재가 조회 결과 비정상: {code}")
+    return price
+
+
+def get_current_quote(token: str, code: str):
+    price = get_current_price(token, code)
     book, _ = api_request("GET", "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn", token,
                           tr_id="FHKST01010200", params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
     quote = book.get("output1") or {}
     ask = number(quote.get("askp1"))
     ask_qty = number(quote.get("askp_rsqn1"))
     return price, ask if ask > 0 and ask_qty > 0 else None
-
-
-def get_current_price(token: str, code: str):
-    return get_current_quote(token, code)[0]
 
 
 def get_account_balance(token: str):
