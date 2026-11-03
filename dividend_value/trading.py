@@ -166,7 +166,7 @@ def entries(bot, token, holdings, deposit, nav):
     snapshot = bot.load_json(bot.BASE_DIR / 'dividend_signals.json', {})
     scan_date = snapshot.get('scan_date')
     expected = os.getenv('GITHUB_SHA')
-    regular = now.weekday() == 1 and scan_date == now.date().isoformat()
+    regular = entry_day(now) and scan_date == now.date().isoformat()
     continuation = (
         now.weekday() == 2
         and scan_date == (now.date() - timedelta(days=1)).isoformat()
