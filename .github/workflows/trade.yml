@@ -14,7 +14,6 @@ on:
     - cron: '12 5 * * 1-5'  # KST 14:12
     - cron: '42 5 * * 1-5'  # KST 14:42 final dividend entry check before 15:00
     - cron: '12 6 * * 1-5'  # KST 15:12
-    - cron: '42 6 * * 1-5'  # KST 15:42 post-close Telegram report
     - cron: '12 7 * * 1-5'  # KST 16:12 backup close report
     - cron: '12 8 * * 1-5'  # KST 17:12
 
