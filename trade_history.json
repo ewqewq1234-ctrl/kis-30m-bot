@@ -191,7 +191,7 @@
       "code": "072870",
       "side": "BUY",
       "requested_qty": 1,
-      "status": "ACCEPTED",
+      "status": "FILLED",
       "created_at": "2026-11-03 14:59:43",
       "odno": "0015523400",
       "applied_fill_qty": 0,
@@ -202,7 +202,9 @@
         "industry": "58",
         "signal_as_of": "2026-11-02",
         "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4"
-      }
+      },
+      "confirmed_fill_qty": 1,
+      "confirmed_fill_amt": 13050
     }
   ]
 }
