@@ -190,13 +190,15 @@ def entries(bot, token, holdings, deposit, nav):
         sector_value = sum(p['qty']*prices[c] for c,p in positions.items() if p['industry'] == sector)
         sleeve = nav * bot.DIVIDEND_VALUE_TARGET_RATIO
         metrics = candidate.get('metrics', {})
-        price = bot.get_current_price(token, code)
+        price, best_ask = bot.get_current_quote(token, code)
         ceiling = metrics.get('buy_ceiling')
         tax_qty = (metrics.get('tax_quantity') or {}).get('additional_qty')
         turnover = candidate.get('avg_turnover_20d')
         if not ceiling or tax_qty is None or not turnover or price > ceiling:
             continue
-        limit = bot.limit_buy_tick(min(price, ceiling))
+        # Prefer the live best ask to reduce passive, unfilled orders. Keep the
+        # valuation ceiling as a hard upper bound.
+        limit = bot.limit_buy_tick(min(best_ask or price, ceiling))
         budget = min(sleeve*.03, sleeve*.04, sleeve*.20-sector_value,
                      (sleeve*.90-value)*.96, deposit*.96, turnover*.01)
         qty = min(max(0, int(budget//limit)), int(tax_qty)) if limit > 0 else 0
