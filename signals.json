@@ -7,7 +7,9 @@
     {
       "code": "000270",
       "name": "기아",
+      "corp_code": "00106641",
       "industry": "30121",
+      "avg_turnover_20d": 95236586610.75,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -52,7 +54,9 @@
     {
       "code": "006890",
       "name": "태경케미컬",
+      "corp_code": "00109161",
       "industry": "20121",
+      "avg_turnover_20d": 113963840.75,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -97,7 +101,9 @@
     {
       "code": "010960",
       "name": "삼호개발",
+      "corp_code": "00128980",
       "industry": "421",
+      "avg_turnover_20d": 351198729.3,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -142,7 +148,9 @@
     {
       "code": "014580",
       "name": "태경비케이",
+      "corp_code": "00122481",
       "industry": "23312",
+      "avg_turnover_20d": 162835395.4,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -187,7 +195,9 @@
     {
       "code": "015890",
       "name": "태경산업",
+      "corp_code": "00153339",
       "industry": "20129",
+      "avg_turnover_20d": 153312827.7,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -232,7 +242,9 @@
     {
       "code": "025000",
       "name": "KPX케미칼",
+      "corp_code": "00191472",
       "industry": "20119",
+      "avg_turnover_20d": 963172292.5,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -277,7 +289,9 @@
     {
       "code": "025540",
       "name": "한국단자",
+      "corp_code": "00157070",
       "industry": "2812",
+      "avg_turnover_20d": 974060737.5,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -322,7 +336,9 @@
     {
       "code": "058850",
       "name": "KTcs",
+      "corp_code": "00372882",
       "industry": "63991",
+      "avg_turnover_20d": 116698320,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -367,7 +383,9 @@
     {
       "code": "064960",
       "name": "SNT모티브",
+      "corp_code": "00398792",
       "industry": "303",
+      "avg_turnover_20d": 1323405372.5,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -412,7 +430,9 @@
     {
       "code": "092230",
       "name": "KPX홀딩스",
+      "corp_code": "00587466",
       "industry": "201",
+      "avg_turnover_20d": 171962172.5,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -457,7 +477,9 @@
     {
       "code": "097520",
       "name": "엠씨넥스",
+      "corp_code": "00564562",
       "industry": "26519",
+      "avg_turnover_20d": 1703007436.75,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -502,7 +524,9 @@
     {
       "code": "102260",
       "name": "동성케미컬",
+      "corp_code": "00679314",
       "industry": "20202",
+      "avg_turnover_20d": 274050989.6,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -547,7 +571,9 @@
     {
       "code": "227840",
       "name": "현대코퍼레이션홀딩스",
+      "corp_code": "01108099",
       "industry": "463",
+      "avg_turnover_20d": 108913304.5,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -592,7 +618,9 @@
     {
       "code": "284740",
       "name": "쿠쿠홈시스",
+      "corp_code": "01267684",
       "industry": "762",
+      "avg_turnover_20d": 492847705,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -637,7 +665,9 @@
     {
       "code": "007370",
       "name": "진양제약",
+      "corp_code": "00150536",
       "industry": "212",
+      "avg_turnover_20d": 502917455.15,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -682,7 +712,9 @@
     {
       "code": "072870",
       "name": "메가스터디",
+      "corp_code": "00422284",
       "industry": "581",
+      "avg_turnover_20d": 267252971.25,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -727,7 +759,9 @@
     {
       "code": "091700",
       "name": "파트론",
+      "corp_code": "00490151",
       "industry": "2629",
+      "avg_turnover_20d": 945654408.85,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -772,7 +806,9 @@
     {
       "code": "136540",
       "name": "윈스테크넷",
+      "corp_code": "00868705",
       "industry": "62021",
+      "avg_turnover_20d": 270959700.5,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -817,7 +853,9 @@
     {
       "code": "215000",
       "name": "골프존",
+      "corp_code": "01067516",
       "industry": "58219",
+      "avg_turnover_20d": 399870352.5,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -862,7 +900,9 @@
     {
       "code": "215200",
       "name": "메가스터디교육",
+      "corp_code": "01074862",
       "industry": "85503",
+      "avg_turnover_20d": 1496953735,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
@@ -907,7 +947,9 @@
     {
       "code": "264450",
       "name": "유비쿼스",
+      "corp_code": "01203376",
       "industry": "26410",
+      "avg_turnover_20d": 433725365.5,
       "as_of": "2026-11-02",
       "status": "PASS",
       "checks": {
