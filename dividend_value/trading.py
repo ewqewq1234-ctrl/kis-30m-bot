@@ -228,7 +228,7 @@ def entries(bot, token, holdings, deposit, nav):
             bot.save_json(path(bot), state)
             bot.execute_order(token,code,qty,'02',ord_dvsn='00',price=limit,
                 strategy=STRATEGY,action_name='DIV entry',strategy_metadata=metadata)
-            bot.assert_no_pending(token)
+            bot.assert_no_pending(token, allow_pending_dividend_buys=True)
             state = rebuild(bot)
             pending_codes = {str(o.get('code')) for o in bot.journal_orders()
                              if o.get('strategy') == STRATEGY and o.get('side') == 'BUY'
