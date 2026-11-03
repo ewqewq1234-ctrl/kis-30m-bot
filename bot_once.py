@@ -1895,7 +1895,7 @@ def send_hourly_session_report():
     now = now_kst()
     if now.weekday() >= 5 or not (15 <= now.hour < 17):
         return False
-    phase = "provisional" if now.strftime("%H:%M") < "15:30" else "closing"
+    phase = "provisional" if now.strftime("%H:%M") <= MARKET_END else "closing"
     key = f"{now:%Y-%m-%d}:{phase}"
     state = load_json(SCHEDULE_STATE_FILE, {})
     if state.get("last_hourly_report") == key:
