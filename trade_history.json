@@ -79,6 +79,25 @@
       },
       "confirmed_fill_qty": 0,
       "confirmed_fill_amt": 0
+    },
+    {
+      "id": "20261103-DIVIDEND-007370-BUY-DIV entry",
+      "strategy": "DIVIDEND",
+      "code": "007370",
+      "side": "BUY",
+      "requested_qty": 6,
+      "status": "INTENT",
+      "created_at": "2026-11-03 14:55:35",
+      "odno": null,
+      "applied_fill_qty": 0,
+      "applied_fill_amount": 0,
+      "sell_cost_basis": 0.0,
+      "strategy_metadata": {
+        "corp_code": "00150536",
+        "industry": "21",
+        "signal_as_of": "2026-11-02",
+        "source_sha": "04efd426e6bdeccde350581488e40f01cb26279d"
+      }
     }
   ]
 }
