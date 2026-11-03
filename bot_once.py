@@ -1308,7 +1308,6 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
         fail("정규장 시간 외 또는 휴장일에 주문 차단")
     side = "BUY" if order_type == "02" else "SELL"
     assert_no_pending(token, allow_pending_dividend_buys=True, target_code=code)
-    side = "BUY" if order_type == "02" else "SELL"
     if side == "BUY":
         check_daily_loss(token)
         current = get_current_price(token, code)
