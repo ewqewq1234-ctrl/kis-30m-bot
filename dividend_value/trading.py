@@ -264,6 +264,16 @@ def entries(bot, token, holdings, deposit, nav):
         if one_day_test:
             break
     if not bot.DRY_RUN and state.get('buy_batch_status') == 'IN_PROGRESS':
-        state.update(buy_batch_status='COMPLETE',
-                     buy_batch_completed_at=now.isoformat())
-        bot.save_json(path(bot), state)
+        batch_orders = [o for o in bot.journal_orders()
+                        if o.get('strategy') == STRATEGY and o.get('side') == 'BUY'
+                        and o.get('strategy_metadata', {}).get('signal_scan_date') == scan_date]
+        unresolved_batch = any(o.get('status') in {'ACCEPTED', 'PARTIAL'}
+                               or (o.get('status') in {'CANCELED', 'REJECTED'}
+                                   and bot.share_quantity(o.get('confirmed_fill_qty', 0)) == 0)
+                               for o in batch_orders)
+        if not unresolved_batch:
+            state.update(buy_batch_status='COMPLETE',
+                         buy_batch_completed_at=now.isoformat())
+            bot.save_json(path(bot), state)
+        else:
+            print('>> DIVIDEND: batch remains IN_PROGRESS; pending or zero-fill order can resume Wednesday')
