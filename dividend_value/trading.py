@@ -191,9 +191,13 @@ def entries(bot, token, holdings, deposit, nav):
     rows = snapshot.get('candidates', [])
     if not isinstance(rows, list):
         bot.fail('DIVIDEND malformed candidate snapshot')
-    # Persist the batch marker before any order. Wednesday can resume only this
-    # exact Tuesday snapshot after a crash or a partially completed batch.
-    if regular:
+    # An empty PASS set does not consume the weekly opportunity. Dry runs
+    # must not create a durable lock or an apparent incomplete live batch.
+    if not any(isinstance(row, dict) and row.get('status') == 'PASS' for row in rows):
+        return
+    # Persist the batch marker before any live order. Wednesday can resume only
+    # this exact Tuesday snapshot after a crash or partially completed batch.
+    if regular and not bot.DRY_RUN:
         state.update(buy_week=week, buy_batch_status='IN_PROGRESS',
                      buy_batch_scan_date=scan_date,
                      buy_batch_source_sha=snapshot['source_sha'], buy_permits={})
