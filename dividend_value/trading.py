@@ -95,10 +95,12 @@ def guard_order(bot, code, qty, side, metadata):
     else:
         permit = state.get('buy_permits', {}).get(code, {})
         now = bot.now_kst()
-        if (not entry_day(now) or (now.date() == ONE_DAY_ENTRY_DATE and qty != 1)
+        now_hms = now.strftime('%H:%M:%S')
+        if (not entry_day(now) or not ('09:10:00' <= now_hms <= '15:00:00')
+                or (now.date() == ONE_DAY_ENTRY_DATE and qty != 1)
                 or permit.get('date') != now.date().isoformat()
                 or qty != permit.get('qty') or metadata != permit.get('metadata')):
-            bot.fail('DIVIDEND buy lacks dated durable permit')
+            bot.fail('DIVIDEND buy lacks valid dated permit or is outside 09:10-15:00 window')
 
 
 def exits(bot, token, holdings, deposit, nav):
@@ -146,7 +148,7 @@ def cooldown_complete(bot, token, last_exit, today):
 
 def entries(bot, token, holdings, deposit, nav):
     now = bot.now_kst()
-    if not entry_day(now) or not ('09:10' <= now.strftime('%H:%M') <= '14:30'):
+    if not entry_day(now) or not ('09:10:00' <= now.strftime('%H:%M:%S') <= '15:00:00'):
         return
     one_day_test = now.date() == ONE_DAY_ENTRY_DATE
     state = reconcile_ownership(bot, holdings)
@@ -190,7 +192,11 @@ def entries(bot, token, holdings, deposit, nav):
         sector_value = sum(p['qty']*prices[c] for c,p in positions.items() if p['industry'] == sector)
         sleeve = nav * bot.DIVIDEND_VALUE_TARGET_RATIO
         metrics = candidate.get('metrics', {})
-        price, best_ask = bot.get_current_quote(token, code)
+        if hasattr(bot, 'get_current_quote'):
+            price, best_ask = bot.get_current_quote(token, code)
+        else:
+            # Keep lightweight strategy harnesses and adapters compatible.
+            price, best_ask = bot.get_current_price(token, code), None
         ceiling = metrics.get('buy_ceiling')
         tax_qty = (metrics.get('tax_quantity') or {}).get('additional_qty')
         turnover = candidate.get('avg_turnover_20d')
