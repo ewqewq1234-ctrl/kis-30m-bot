@@ -76,7 +76,9 @@
         "industry": "20",
         "signal_as_of": "2026-11-02",
         "source_sha": "3bffc742a13c802793e9dd978d9eea87049e39c1"
-      }
+      },
+      "confirmed_fill_qty": 0,
+      "confirmed_fill_amt": 0
     }
   ]
 }
