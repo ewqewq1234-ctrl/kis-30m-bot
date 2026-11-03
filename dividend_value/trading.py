@@ -128,7 +128,7 @@ def exits(bot, token, holdings, deposit, nav):
         if p.get('exit_intent'):
             bot.execute_order(token, code, p['qty'], '01', strategy=STRATEGY,
                 action_name='DIV exit', cost_basis=p['avg_price'])
-            bot.assert_no_pending(token)
+            bot.assert_no_pending(token, allow_pending_dividend_buys=True)
             state = rebuild(bot)
             if not bot.DRY_RUN:
                 holdings, deposit, nav = bot.get_account_balance(token)
@@ -173,10 +173,16 @@ def entries(bot, token, holdings, deposit, nav):
     if not bot.DRY_RUN and not one_day_test:
         bot.save_json(path(bot), state)
     rules = DEFAULT_CONFIG['future_execution']
+    pending_codes = {str(o.get('code')) for o in bot.journal_orders()
+                     if o.get('strategy') == STRATEGY and o.get('side') == 'BUY'
+                     and o.get('status') in {'ACCEPTED', 'PARTIAL'}}
     for candidate in sorted(rows, key=lambda r:r['code']):
         if candidate.get('status') != 'PASS':
             continue
         code = candidate['code']
+        if code in pending_codes:
+            print(f'>> DIVIDEND {code}: prior buy remains pending; skip duplicate and continue other candidates')
+            continue
         if code in holdings or code in bot.ATTACK_UNIVERSE or code in bot.DEFENSE_UNIVERSE or code == bot.CODE_BULL:
             continue
         if not cooldown_complete(bot, token, state.get('last_exits', {}).get(code), now.date()):
@@ -224,6 +230,9 @@ def entries(bot, token, holdings, deposit, nav):
                 strategy=STRATEGY,action_name='DIV entry',strategy_metadata=metadata)
             bot.assert_no_pending(token)
             state = rebuild(bot)
+            pending_codes = {str(o.get('code')) for o in bot.journal_orders()
+                             if o.get('strategy') == STRATEGY and o.get('side') == 'BUY'
+                             and o.get('status') in {'ACCEPTED', 'PARTIAL'}}
             holdings, deposit, nav = bot.get_account_balance(token)
         else:
             print(f'>> [DIVIDEND DRY_RUN] eligible {code} qty={qty}; no order')
