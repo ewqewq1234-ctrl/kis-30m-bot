@@ -86,7 +86,7 @@
       "code": "007370",
       "side": "BUY",
       "requested_qty": 6,
-      "status": "ACCEPTED",
+      "status": "FILLED",
       "created_at": "2026-11-03 14:55:35",
       "odno": "0015422100",
       "applied_fill_qty": 0,
@@ -97,7 +97,9 @@
         "industry": "21",
         "signal_as_of": "2026-11-02",
         "source_sha": "04efd426e6bdeccde350581488e40f01cb26279d"
-      }
+      },
+      "confirmed_fill_qty": 6,
+      "confirmed_fill_amt": 20460
     }
   ]
 }
