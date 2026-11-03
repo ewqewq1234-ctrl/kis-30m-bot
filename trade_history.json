@@ -170,7 +170,7 @@
       "code": "058850",
       "side": "BUY",
       "requested_qty": 10,
-      "status": "ACCEPTED",
+      "status": "FILLED",
       "created_at": "2026-11-03 14:59:32",
       "odno": "0015519300",
       "applied_fill_qty": 0,
@@ -181,7 +181,9 @@
         "industry": "63",
         "signal_as_of": "2026-11-02",
         "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4"
-      }
+      },
+      "confirmed_fill_qty": 10,
+      "confirmed_fill_amt": 20150
     }
   ]
 }
