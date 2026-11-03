@@ -1259,18 +1259,30 @@ def reconcile_orders(token: str):
     rebuild_strategy_state()
 
 
-def assert_no_pending(token):
+def assert_no_pending(token, *, allow_pending_dividend_buys=False, target_code=None):
     reconcile_orders(token)
     unresolved = open_or_uncertain_orders()
-    if unresolved:
-        ids = ", ".join(f"{x['id']}:{x['status']}" for x in unresolved[:3])
-        fail(f"미확정/미체결 주문 {len(unresolved)}건 존재 ({ids}). 자동 재주문 차단")
-    # Prevent bot competing with any other KRX order in this account.
+    allowed = []
+    if allow_pending_dividend_buys:
+        allowed = [o for o in unresolved
+                   if o.get("strategy") == "DIVIDEND" and o.get("side") == "BUY"
+                   and o.get("status") in {"ACCEPTED", "PARTIAL"} and o.get("odno")
+                   and (target_code is None or o.get("code") != target_code)]
+    allowed_ids = {(str(o.get("odno")).lstrip("0") or "0", str(o.get("code")))
+                   for o in allowed}
+    blocked = [o for o in unresolved if o not in allowed]
+    if blocked:
+        ids = ", ".join(f"{x['id']}:{x['status']}" for x in blocked[:3])
+        fail(f"미확정/미체결 주문 {len(blocked)}건 존재 ({ids}). 자동 재주문 차단")
+    # Only exact bot-journaled dividend buy orders for other symbols may remain open.
     for row in get_order_records(token):
         qty = number(row.get("ord_qty"))
         filled = number(row.get("tot_ccld_qty"))
         canceled = number(row.get("cncl_cfrm_qty"))
         if qty > 0 and filled + canceled < qty:
+            pair = (str(row.get("odno", "")).lstrip("0") or "0", str(row.get("pdno", "")))
+            if pair in allowed_ids:
+                continue
             fail("계좌에 미체결 주문이 존재합니다. 자동 신규주문 중지")
 
 
@@ -1294,7 +1306,8 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
         fail("잘못된 주문구분/지정가")
     if not order_window() or not is_market_open_today(token):
         fail("정규장 시간 외 또는 휴장일에 주문 차단")
-    assert_no_pending(token)
+    side = "BUY" if order_type == "02" else "SELL"
+    assert_no_pending(token, allow_pending_dividend_buys=True, target_code=code)
     side = "BUY" if order_type == "02" else "SELL"
     if side == "BUY":
         check_daily_loss(token)
@@ -1353,6 +1366,13 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
             filled = number(entry.get("confirmed_fill_qty"))
             print(f">> ✅ [{action_name}] 실제 체결 완료: {filled}주")
             return True, filled
+    entry = next(x for x in journal_orders() if x.get("id") == key)
+    if (strategy == "DIVIDEND" and side == "BUY"
+            and entry.get("status") in {"ACCEPTED", "PARTIAL", "CANCELED", "REJECTED"}):
+        filled = number(entry.get("confirmed_fill_qty"))
+        print(f">> ⚠️ [{action_name}] {code} 주문 {entry['status']} "
+              f"(확인 체결 {filled}/{qty}); 다른 종목의 적격 주문은 계속 진행")
+        return False, filled
     fail(f"[{action_name}] 미체결/부분체결 또는 체결조회 지연. 후속 주문 중단. 주문번호={odno}")
 
 
@@ -1914,7 +1934,7 @@ def main():
                 )
                 return
         # Reconcile before any trading decisions; never silently swallow a safety exception.
-        assert_no_pending(token)
+        assert_no_pending(token, allow_pending_dividend_buys=True)
         holdings, deposit, tot_eval = get_account_balance(token)
         if RUN_REPORT_ONLY:
             handle_daily_closing_report(token, holdings, tot_eval)
@@ -1932,7 +1952,7 @@ def main():
             holdings, deposit, tot_eval = dividend_trading.exits(
                 sys.modules[__name__], token, holdings, deposit, tot_eval)
         # Always reconcile before BAA; no automatic reorders on uncertain fills.
-        assert_no_pending(token)
+        assert_no_pending(token, allow_pending_dividend_buys=True)
         # Refresh before BAA when the bot placed an order, or when BAA may trade.
         # In other windows, reuse the initial snapshot to avoid needless API calls.
         baa_time = now_kst().strftime("%H:%M")
@@ -1940,7 +1960,7 @@ def main():
             holdings, deposit, tot_eval = get_account_balance(token)
         before_baa_orders = ACCOUNT_ORDER_ATTEMPTS
         run_baa(token, holdings, deposit, tot_eval, force_run=FORCE_BAA)
-        assert_no_pending(token)
+        assert_no_pending(token, allow_pending_dividend_buys=True)
         if ACCOUNT_ORDER_ATTEMPTS != before_baa_orders:
             holdings, deposit, tot_eval = get_account_balance(token)
         if PORTFOLIO["dividend_value_orders_enabled"]:
