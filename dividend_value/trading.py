@@ -96,11 +96,21 @@ def guard_order(bot, code, qty, side, metadata):
         permit = state.get('buy_permits', {}).get(code, {})
         now = bot.now_kst()
         now_hms = now.strftime('%H:%M:%S')
-        if (not entry_day(now) or not ('09:10:00' <= now_hms <= '15:00:00')
+        scan_date = metadata.get('signal_scan_date') if isinstance(metadata, dict) else None
+        regular = entry_day(now) and scan_date == now.date().isoformat()
+        continuation = (
+            now.weekday() == 2
+            and scan_date == (now.date() - timedelta(days=1)).isoformat()
+            and date.fromisoformat(scan_date).weekday() == 1
+            and state.get('buy_batch_status') == 'IN_PROGRESS'
+            and state.get('buy_batch_scan_date') == scan_date
+            and state.get('buy_batch_source_sha') == metadata.get('source_sha')
+        )
+        if (not (regular or continuation) or not ('09:10:00' <= now_hms <= '15:00:00')
                 or (now.date() == ONE_DAY_ENTRY_DATE and qty != 1)
                 or permit.get('date') != now.date().isoformat()
                 or qty != permit.get('qty') or metadata != permit.get('metadata')):
-            bot.fail('DIVIDEND buy lacks valid dated permit or is outside 09:10-15:00 window')
+            bot.fail('DIVIDEND buy lacks valid dated permit or is outside Tue/Wed-resume 09:10-15:00 window')
 
 
 def exits(bot, token, holdings, deposit, nav):
@@ -148,30 +158,48 @@ def cooldown_complete(bot, token, last_exit, today):
 
 def entries(bot, token, holdings, deposit, nav):
     now = bot.now_kst()
-    if not entry_day(now) or not ('09:10:00' <= now.strftime('%H:%M:%S') <= '15:00:00'):
+    if not ('09:10:00' <= now.strftime('%H:%M:%S') <= '15:00:00'):
         return
     one_day_test = now.date() == ONE_DAY_ENTRY_DATE
     state = reconcile_ownership(bot, holdings)
     week = f'{now.isocalendar().year}-{now.isocalendar().week}'
-    if state.get('buy_week') == week:
-        return
     snapshot = bot.load_json(bot.BASE_DIR / 'dividend_signals.json', {})
-    prev = bot.previous_exchange_session(token, now.date()).isoformat()
+    scan_date = snapshot.get('scan_date')
     expected = os.getenv('GITHUB_SHA')
+    regular = now.weekday() == 1 and scan_date == now.date().isoformat()
+    continuation = (
+        now.weekday() == 2
+        and scan_date == (now.date() - timedelta(days=1)).isoformat()
+        and isinstance(scan_date, str)
+        and date.fromisoformat(scan_date).weekday() == 1
+        and state.get('buy_week') == week
+        and state.get('buy_batch_status') == 'IN_PROGRESS'
+        and state.get('buy_batch_scan_date') == scan_date
+        and state.get('buy_batch_source_sha') == snapshot.get('source_sha')
+    )
+    if not regular and not continuation:
+        return
+    if regular and state.get('buy_week') == week and state.get('buy_batch_status') != 'IN_PROGRESS':
+        return
+    prev = bot.previous_exchange_session(token, date.fromisoformat(scan_date)).isoformat()
+    source_matches = (snapshot.get('source_sha') == expected if regular
+                      else snapshot.get('source_sha') == state.get('buy_batch_source_sha'))
     if (not snapshot or snapshot.get('as_of') != prev or snapshot.get('partial')
-            or not expected or snapshot.get('source_sha') != expected
-            or snapshot.get('scan_date') != now.date().isoformat()):
-        print('>> DIVIDEND: waiting for a complete, current scan')
+            or not snapshot.get('source_sha') or not source_matches):
+        print('>> DIVIDEND: waiting for the Tuesday batch snapshot to validate')
         return
     rows = snapshot.get('candidates', [])
     if not isinstance(rows, list):
         bot.fail('DIVIDEND malformed candidate snapshot')
-    # Once per week, including an empty candidate set. No late/restarted retry
-    # of the buy batch after an uncertain order outcome.
-    if not one_day_test:
-        state.update(buy_week=week, buy_permits={})
-    if not bot.DRY_RUN and not one_day_test:
-        bot.save_json(path(bot), state)
+    # Persist the batch marker before any order. Wednesday can resume only this
+    # exact Tuesday snapshot after a crash or a partially completed batch.
+    if regular:
+        state.update(buy_week=week, buy_batch_status='IN_PROGRESS',
+                     buy_batch_scan_date=scan_date,
+                     buy_batch_source_sha=snapshot['source_sha'], buy_permits={})
+        if not one_day_test:
+            bot.save_json(path(bot), state)
+    state.setdefault('buy_permits', {})
     rules = DEFAULT_CONFIG['future_execution']
     pending_codes = {str(o.get('code')) for o in bot.journal_orders()
                      if o.get('strategy') == STRATEGY and o.get('side') == 'BUY'
@@ -219,10 +247,7 @@ def entries(bot, token, holdings, deposit, nav):
         if qty <= 0:
             continue
         metadata = {'corp_code':corp,'industry':sector,'signal_as_of':prev,
-                    'source_sha':snapshot['source_sha']}
-        if one_day_test:
-            # Persist the weekly lock before the only permitted live order.
-            state.update(buy_week=week, buy_permits={})
+                    'source_sha':snapshot['source_sha'],'signal_scan_date':scan_date}
         state['buy_permits'][code] = {'date':now.date().isoformat(),'qty':qty,'metadata':metadata}
         if not bot.DRY_RUN:
             bot.save_json(path(bot), state)
@@ -238,3 +263,7 @@ def entries(bot, token, holdings, deposit, nav):
             print(f'>> [DIVIDEND DRY_RUN] eligible {code} qty={qty}; no order')
         if one_day_test:
             break
+    if not bot.DRY_RUN and state.get('buy_batch_status') == 'IN_PROGRESS':
+        state.update(buy_batch_status='COMPLETE',
+                     buy_batch_completed_at=now.isoformat())
+        bot.save_json(path(bot), state)
