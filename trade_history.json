@@ -65,7 +65,7 @@
       "code": "006890",
       "side": "BUY",
       "requested_qty": 5,
-      "status": "ACCEPTED",
+      "status": "FILLED",
       "created_at": "2026-11-03 14:28:17",
       "odno": "0014748300",
       "applied_fill_qty": 0,
@@ -77,8 +77,8 @@
         "signal_as_of": "2026-11-02",
         "source_sha": "3bffc742a13c802793e9dd978d9eea87049e39c1"
       },
-      "confirmed_fill_qty": 0,
-      "confirmed_fill_amt": 0
+      "confirmed_fill_qty": 5,
+      "confirmed_fill_amt": 21550
     },
     {
       "id": "20261103-DIVIDEND-007370-BUY-DIV entry",
