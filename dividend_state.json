@@ -150,6 +150,17 @@
         "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
         "signal_scan_date": "2026-11-03"
       }
+    },
+    "136540": {
+      "date": "2026-11-04",
+      "qty": 1,
+      "metadata": {
+        "corp_code": "00868705",
+        "industry": "62",
+        "signal_as_of": "2026-11-02",
+        "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+        "signal_scan_date": "2026-11-03"
+      }
     }
   }
 }
