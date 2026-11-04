@@ -62,7 +62,7 @@ class TradingTests(unittest.TestCase):
         with self.assertRaises(ValueError): t.exits(self.bot,'token',{'000001':{'qty':4}},0,1000)
         self.bot.execute_order.assert_not_called()
 
-    def test_buy_only_tuesday_once_and_tax_quantity_cap(self):
+    def test_buy_cycle_attempts_once_daily_and_retries_wednesday(self):
         self.snapshot()
         with patch.dict('os.environ',GITHUB_SHA='sha'):
             t.entries(self.bot,'token',{},100000,100000)
@@ -71,7 +71,8 @@ class TradingTests(unittest.TestCase):
         self.assertEqual(self.bot.execute_order.call_args.args[2],5)
         self.bot.now_kst=lambda:datetime(2026,11,4,10,12)
         t.entries(self.bot,'token',{},100000,100000)
-        self.bot.execute_order.assert_called_once()
+        self.assertEqual(self.bot.execute_order.call_count,2)
+        self.assertEqual(self.bot.execute_order.call_args.args[2],5)
 
     def test_november_2_one_share_entry_and_durable_weekly_lock(self):
         self.bot.now_kst=lambda:datetime(2026,11,2,11,12)
