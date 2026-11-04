@@ -1,5 +1,90 @@
 {
-  "positions": {},
+  "positions": {
+    "007370": {
+      "corp_code": "00150536",
+      "industry": "21",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "04efd426e6bdeccde350581488e40f01cb26279d",
+      "qty": 6,
+      "avg_price": 3410.0,
+      "entry_id": "20261103-DIVIDEND-007370-BUY-DIV entry",
+      "high": 3410.0,
+      "armed": false,
+      "exit_intent": null
+    },
+    "010960": {
+      "corp_code": "00128980",
+      "industry": "42",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+      "qty": 7,
+      "avg_price": 3000.0,
+      "entry_id": "20261103-DIVIDEND-010960-BUY-DIV entry",
+      "high": 3000.0,
+      "armed": false,
+      "exit_intent": null
+    },
+    "014580": {
+      "corp_code": "00122481",
+      "industry": "23",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+      "qty": 6,
+      "avg_price": 3585.0,
+      "entry_id": "20261103-DIVIDEND-014580-BUY-DIV entry",
+      "high": 3585.0,
+      "armed": false,
+      "exit_intent": null
+    },
+    "015890": {
+      "corp_code": "00153339",
+      "industry": "20",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+      "qty": 4,
+      "avg_price": 4540.0,
+      "entry_id": "20261103-DIVIDEND-015890-BUY-DIV entry",
+      "high": 4540.0,
+      "armed": false,
+      "exit_intent": null
+    },
+    "058850": {
+      "corp_code": "00372882",
+      "industry": "63",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+      "qty": 10,
+      "avg_price": 2015.0,
+      "entry_id": "20261103-DIVIDEND-058850-BUY-DIV entry",
+      "high": 2015.0,
+      "armed": false,
+      "exit_intent": null
+    },
+    "072870": {
+      "corp_code": "00422284",
+      "industry": "58",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+      "qty": 1,
+      "avg_price": 13050.0,
+      "entry_id": "20261103-DIVIDEND-072870-BUY-DIV entry",
+      "high": 13050.0,
+      "armed": false,
+      "exit_intent": null
+    },
+    "091700": {
+      "corp_code": "00490151",
+      "industry": "26",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+      "qty": 5,
+      "avg_price": 4290.0,
+      "entry_id": "20261103-DIVIDEND-091700-BUY-DIV entry",
+      "high": 4290.0,
+      "armed": false,
+      "exit_intent": null
+    }
+  },
   "last_exits": {},
   "buy_week": "2026-45",
   "buy_batch_status": "IN_PROGRESS",
