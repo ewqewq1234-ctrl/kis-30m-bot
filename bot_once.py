@@ -708,7 +708,7 @@ def _journal_order_time(order):
 def _terminal_fill_evidence(order):
     """Validate a terminal order's broker-confirmed fill and residual quantity."""
     status = order.get("status")
-    if status not in {"FILLED", "CANCELED", "REJECTED"}:
+    if status not in {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}:
         fail(f"미확정 주문은 SWING 마이그레이션/원장 재구성에 사용할 수 없습니다: {status}")
     requested = _strict_journal_int(order.get("requested_qty"), "requested_qty")
     if requested <= 0:
@@ -727,7 +727,7 @@ def _terminal_fill_evidence(order):
         fail("주문 원장 체결 수량/금액이 일치하지 않습니다")
     if status == "FILLED" and filled != requested:
         fail("FILLED 주문의 확정 체결 수량이 요청 수량과 다릅니다")
-    if status in {"CANCELED", "REJECTED"} and filled == requested:
+    if status in {"CANCELED", "REJECTED", "EXPIRED"} and filled == requested:
         fail(f"{status} 주문이 요청 수량 전체 체결로 기록되어 있습니다")
     if status == "CANCELED":
         canceled_value = order.get("confirmed_cancel_qty")
@@ -747,6 +747,15 @@ def _terminal_fill_evidence(order):
             rejected = _strict_journal_int(rejected_value, "confirmed_rejected_qty")
         if filled + rejected != requested:
             fail("REJECTED 주문의 체결/거절 수량이 요청 수량과 다릅니다")
+    if status == "EXPIRED":
+        canceled = _strict_journal_int(
+            order.get("confirmed_cancel_qty", 0), "confirmed_cancel_qty"
+        )
+        expired = _strict_journal_int(
+            order.get("confirmed_expired_qty"), "confirmed_expired_qty"
+        )
+        if filled + canceled + expired != requested:
+            fail("EXPIRED 주문의 체결/취소/만료 수량이 요청 수량과 다릅니다")
     return requested, filled, amount
 
 
@@ -1212,11 +1221,11 @@ def reconcile_orders(token: str):
     # Rebuild first even if no unresolved orders: recovery from a previous crash.
     rebuild_strategy_state()
     orders = journal_orders()
-    pending = [o for o in orders if o.get("status") not in ("FILLED", "REJECTED", "CANCELED")]
+    terminal = {"FILLED", "REJECTED", "CANCELED", "EXPIRED"}
+    pending = [o for o in orders if o.get("status") not in terminal]
     if not pending:
         return
     today = now_kst().date()
-    today_key = today.strftime("%Y%m%d")
     rows_by_day = {}
     for entry in pending:
         created = entry.get("created_at", "")[:10]
@@ -1224,24 +1233,23 @@ def reconcile_orders(token: str):
             order_day = datetime.strptime(created, "%Y-%m-%d").date()
         except ValueError:
             fail("미확정 주문 날짜 형식 오류")
-        is_today = order_day == today
-        resumable_dividend = (
+        historical_dividend = (
             entry.get("strategy") == "DIVIDEND"
             and entry.get("side") == "BUY"
             and entry.get("status") in {"ACCEPTED", "PARTIAL"}
             and bool(entry.get("odno"))
-            and order_day == today - timedelta(days=1)
-            and order_day.weekday() == 1
-            and today.weekday() == 2
+            and order_day < today
         )
-        if not is_today and not resumable_dividend:
+        if order_day != today and not historical_dividend:
             fail("전일 이전의 미확정 주문이 있습니다. 원장 대조 후 수동 정리 필요")
         day = order_day.strftime("%Y%m%d")
         if day not in rows_by_day:
             rows_by_day[day] = get_order_records(token, day=day)
     for entry in pending:
-        order_day_key = entry.get("created_at", "")[:10].replace("-", "")
-        rows = rows_by_day[order_day_key]
+        order_day = datetime.strptime(
+            entry.get("created_at", "")[:10], "%Y-%m-%d"
+        ).date()
+        rows = rows_by_day[order_day.strftime("%Y%m%d")]
         odno = str(entry.get("odno") or "")
         if not odno:
             # Unknown POST outcomes cannot be retried safely.
@@ -1249,14 +1257,12 @@ def reconcile_orders(token: str):
         matching = [r for r in rows if str(r.get("odno", "")).lstrip("0") == odno.lstrip("0")
                     and str(r.get("pdno", "")) == entry["code"]]
         if len(matching) != 1:
-            continue  # Query may be delayed; stay pending.
+            continue  # Query may be delayed; stay pending and never duplicate this symbol.
         row = matching[0]
         qty = number(row.get("ord_qty"))
         filled = number(row.get("tot_ccld_qty"))
         amount = number(row.get("tot_ccld_amt"))
         canceled = number(row.get("cncl_cfrm_qty"))
-        # Broker-confirmed cancellation closes the remaining quantity; any
-        # already-filled shares still belong in the position journal.
         if (qty <= 0 or filled < 0 or canceled < 0 or filled + canceled > qty
                 or qty != number(entry["requested_qty"])):
             fail(f"주문조회 수량 불일치: {odno}")
@@ -1268,18 +1274,25 @@ def reconcile_orders(token: str):
             status = "FILLED"
         elif canceled > 0 and filled + canceled == qty:
             status = "CANCELED"
+        elif order_day < today:
+            # KRX cash limit orders expire at the end of their order date.
+            # Exact historical broker evidence makes a zero-fill safe to
+            # recalculate and retry on the next cycle day.
+            status = "EXPIRED"
         else:
             status = "PARTIAL" if filled > 0 else "ACCEPTED"
-        # The journal is committed BEFORE derived state. Recovery is idempotent.
         updates = {
             "status": status, "confirmed_fill_qty": filled,
             "confirmed_fill_amt": amount,
         }
         if status == "CANCELED":
             updates["confirmed_cancel_qty"] = canceled
+        elif status == "EXPIRED":
+            if canceled:
+                updates["confirmed_cancel_qty"] = canceled
+            updates["confirmed_expired_qty"] = qty - filled - canceled
         update_journal(entry["id"], **updates)
     rebuild_strategy_state()
-
 
 def assert_no_pending(token, *, allow_pending_dividend_buys=False, target_code=None):
     reconcile_orders(token)
@@ -1334,10 +1347,18 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
         check_daily_loss(token)
         current = get_current_price(token, code)
         if ord_dvsn == "00" and current > number(price):
-            fail("현재가가 보호 지정가를 초과하여 매수 주문을 차단합니다")
+            if strategy == "DIVIDEND":
+                print(f">> DIVIDEND {code}: 현재가 {current:,}원 > 지정가 {number(price):,}원; "
+                      "가치 상한 지정가 주문을 유지합니다")
+            else:
+                fail("현재가가 보호 지정가를 초과하여 매수 주문을 차단합니다")
         allowed = get_buyable_qty(token, code, number(price) if ord_dvsn == "00" else current,
                                   ord_dvsn=ord_dvsn)
         if qty > allowed:
+            if strategy == "DIVIDEND":
+                print(f">> DIVIDEND {code}: 매수가능 {allowed}주 < 요청 {qty}주; "
+                      "오늘은 건너뛰고 다음 거래일에 다시 계산합니다")
+                return False, 0
             fail(f"매수가능 {allowed}주 < 요청 {qty}주: 수량 자동변경 없이 주문 차단")
     else:
         holdings, _, _ = get_account_balance(token)
@@ -1370,7 +1391,17 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
     try:
         result, _ = api_request("POST", "/uapi/domestic-stock/v1/trading/order-cash", token,
                                 tr_id=tr_id, body=body, timeout=10, retries=0)
-    except TradeSafetyError:
+    except TradeSafetyError as exc:
+        # A broker business rejection proves no order was accepted. Record it
+        # per symbol and continue the dividend batch. Network/HTTP uncertainty
+        # still stops all later orders because a hidden accepted order is possible.
+        if strategy == "DIVIDEND" and side == "BUY" and "KIS API 거부" in str(exc):
+            update_journal(
+                key, status="REJECTED", confirmed_fill_qty=0,
+                confirmed_fill_amt=0, confirmed_rejected_qty=qty,
+            )
+            print(f">> ⚠️ [{action_name}] {code} 주문 거절; 다른 종목 주문은 계속 진행")
+            return False, 0
         update_journal(key, status="UNCERTAIN")
         fail(f"[{action_name}] 주문 접수 결과 불명: 자동 재주문 금지. 계좌 주문내역 수동 확인 ({key})")
     odno = str((result.get("output") or {}).get("ODNO") or "")
@@ -1389,7 +1420,7 @@ def execute_order(token: str, code: str, qty: int, order_type="02", ord_dvsn="01
             return True, filled
     entry = next(x for x in journal_orders() if x.get("id") == key)
     if (strategy == "DIVIDEND" and side == "BUY"
-            and entry.get("status") in {"ACCEPTED", "PARTIAL", "CANCELED", "REJECTED"}):
+            and entry.get("status") in {"ACCEPTED", "PARTIAL", "CANCELED", "REJECTED", "EXPIRED"}):
         filled = number(entry.get("confirmed_fill_qty"))
         print(f">> ⚠️ [{action_name}] {code} 주문 {entry['status']} "
               f"(확인 체결 {filled}/{qty}); 다른 종목의 적격 주문은 계속 진행")
