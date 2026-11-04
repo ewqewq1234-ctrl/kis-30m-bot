@@ -121,6 +121,19 @@
       "high": 3435.0,
       "armed": false,
       "exit_intent": null
+    },
+    "136540": {
+      "corp_code": "00868705",
+      "industry": "62",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+      "signal_scan_date": "2026-11-03",
+      "qty": 1,
+      "avg_price": 11700.0,
+      "entry_id": "20261104-DIVIDEND-136540-BUY-DIV entry",
+      "high": 11700.0,
+      "armed": false,
+      "exit_intent": null
     }
   },
   "last_exits": {},
