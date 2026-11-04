@@ -1,5 +1,17 @@
 {
   "positions": {
+    "006890": {
+      "corp_code": "00109161",
+      "industry": "20",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "3bffc742a13c802793e9dd978d9eea87049e39c1",
+      "qty": 5,
+      "avg_price": 4310.0,
+      "entry_id": "20261103-DIVIDEND-006890-BUY-DIV entry",
+      "high": 4310.0,
+      "armed": false,
+      "exit_intent": null
+    },
     "007370": {
       "corp_code": "00150536",
       "industry": "21",
