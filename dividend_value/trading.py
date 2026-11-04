@@ -222,6 +222,10 @@ def entries(bot, token, holdings, deposit, nav):
             bot.save_json(path(bot), state)
     state.setdefault('buy_permits', {})
     state.setdefault('buy_attempts', {})
+    if (one_day_test
+            and any(day == today.isoformat()
+                    for day in state.get('buy_attempts', {}).values())):
+        return
     rules = DEFAULT_CONFIG['future_execution']
     pending_codes = {str(o.get('code')) for o in bot.journal_orders()
                      if o.get('strategy') == STRATEGY and o.get('side') == 'BUY'
