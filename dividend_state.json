@@ -108,6 +108,19 @@
       "high": 16710.0,
       "armed": false,
       "exit_intent": null
+    },
+    "102260": {
+      "corp_code": "00679314",
+      "industry": "20",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+      "signal_scan_date": "2026-11-03",
+      "qty": 6,
+      "avg_price": 3435.0,
+      "entry_id": "20261104-DIVIDEND-102260-BUY-DIV entry",
+      "high": 3435.0,
+      "armed": false,
+      "exit_intent": null
     }
   },
   "last_exits": {},
