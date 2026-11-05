@@ -147,6 +147,19 @@
       "high": 12260.0,
       "armed": false,
       "exit_intent": null
+    },
+    "264450": {
+      "corp_code": "01203376",
+      "industry": "26",
+      "signal_as_of": "2026-11-02",
+      "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+      "signal_scan_date": "2026-11-03",
+      "qty": 2,
+      "avg_price": 9850.0,
+      "entry_id": "20261105-DIVIDEND-264450-BUY-DIV entry",
+      "high": 9850.0,
+      "armed": false,
+      "exit_intent": null
     }
   },
   "last_exits": {},
