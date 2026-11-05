@@ -8,7 +8,7 @@
       "qty": 5,
       "avg_price": 4310.0,
       "entry_id": "20261103-DIVIDEND-006890-BUY-DIV entry",
-      "high": 4435,
+      "high": 4435.0,
       "armed": false,
       "exit_intent": null
     },
@@ -20,7 +20,7 @@
       "qty": 6,
       "avg_price": 3410.0,
       "entry_id": "20261103-DIVIDEND-007370-BUY-DIV entry",
-      "high": 3445,
+      "high": 3445.0,
       "armed": false,
       "exit_intent": null
     },
@@ -32,7 +32,7 @@
       "qty": 7,
       "avg_price": 3000.0,
       "entry_id": "20261103-DIVIDEND-010960-BUY-DIV entry",
-      "high": 3005,
+      "high": 3005.0,
       "armed": false,
       "exit_intent": null
     },
@@ -68,7 +68,7 @@
       "qty": 10,
       "avg_price": 2015.0,
       "entry_id": "20261103-DIVIDEND-058850-BUY-DIV entry",
-      "high": 2025,
+      "high": 2025.0,
       "armed": false,
       "exit_intent": null
     },
