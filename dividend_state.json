@@ -198,9 +198,21 @@
         "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
         "signal_scan_date": "2026-11-03"
       }
+    },
+    "264450": {
+      "date": "2026-11-05",
+      "qty": 2,
+      "metadata": {
+        "corp_code": "01203376",
+        "industry": "26",
+        "signal_as_of": "2026-11-02",
+        "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
+        "signal_scan_date": "2026-11-03"
+      }
     }
   },
   "buy_attempts": {
-    "227840": "2026-11-05"
+    "227840": "2026-11-05",
+    "264450": "2026-11-05"
   }
 }
