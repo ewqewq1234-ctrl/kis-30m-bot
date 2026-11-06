@@ -275,9 +275,23 @@ def entries(bot, token, holdings, deposit, nav):
         # Submit a valuation-capped limit even if the live price moves above it.
         # The order may wait for a pullback; it is reconciled before the next day.
         limit = bot.limit_buy_tick(min(best_ask or price, ceiling))
-        budget = min(sleeve*.03, sleeve*.04, sleeve*.20-sector_value,
-                     (sleeve*.90-value)*.96, deposit*.96, turnover*.01)
+        # Normal sizing keeps the 3% initial and 4% company targets.
+        # For a small account, allow one share when those soft targets alone
+        # would round the order to zero. The hard 40% sleeve, 20% sector,
+        # available-cash, liquidity, valuation and tax limits still apply.
+        hard_capacity = min(
+            max(0, sleeve*.20-sector_value),
+            max(0, sleeve-value),
+            max(0, deposit*.96),
+            turnover*.01,
+        )
+        budget = min(sleeve*.03, sleeve*.04, hard_capacity)
         qty = min(max(0, int(budget//limit)), int(tax_qty)) if limit > 0 else 0
+        if (qty <= 0 and limit > 0 and int(tax_qty) >= 1
+                and limit <= hard_capacity):
+            qty = 1
+            print(f'>> DIVIDEND {code}: 소액계좌 최소 1주 예외 적용 '
+                  f'(지정가 {limit:,.0f}원, 잔여 한도 {hard_capacity:,.0f}원)')
         if one_day_test:
             qty = min(qty, 1)
         if qty <= 0:
