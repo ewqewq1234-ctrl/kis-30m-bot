@@ -6,7 +6,7 @@
   "realized_daytrade_pnl": -1005.0,
   "last_report_date": "2026-10-22",
   "last_skip_date": "2026-11-09",
-  "last_skip_at": "2026-11-09 10:41:00",
+  "last_skip_at": "2026-11-09 11:36:38",
   "last_skip_mode": "ATTACK",
   "last_skip_reason": "공격 후보 중 MA60/MA200 추세 조건을 충족한 종목이 없습니다."
 }
