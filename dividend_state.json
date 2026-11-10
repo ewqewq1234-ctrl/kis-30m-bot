@@ -163,70 +163,11 @@
     }
   },
   "last_exits": {},
-  "buy_week": "2026-45",
+  "buy_week": "2026-46",
   "buy_batch_status": "IN_PROGRESS",
-  "buy_batch_scan_date": "2026-11-03",
-  "buy_batch_source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
-  "buy_permits": {
-    "097520": {
-      "date": "2026-11-04",
-      "qty": 1,
-      "metadata": {
-        "corp_code": "00564562",
-        "industry": "26",
-        "signal_as_of": "2026-11-02",
-        "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
-        "signal_scan_date": "2026-11-03"
-      }
-    },
-    "102260": {
-      "date": "2026-11-04",
-      "qty": 6,
-      "metadata": {
-        "corp_code": "00679314",
-        "industry": "20",
-        "signal_as_of": "2026-11-02",
-        "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
-        "signal_scan_date": "2026-11-03"
-      }
-    },
-    "136540": {
-      "date": "2026-11-04",
-      "qty": 1,
-      "metadata": {
-        "corp_code": "00868705",
-        "industry": "62",
-        "signal_as_of": "2026-11-02",
-        "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
-        "signal_scan_date": "2026-11-03"
-      }
-    },
-    "227840": {
-      "date": "2026-11-05",
-      "qty": 1,
-      "metadata": {
-        "corp_code": "01108099",
-        "industry": "46",
-        "signal_as_of": "2026-11-02",
-        "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
-        "signal_scan_date": "2026-11-03"
-      }
-    },
-    "264450": {
-      "date": "2026-11-05",
-      "qty": 2,
-      "metadata": {
-        "corp_code": "01203376",
-        "industry": "26",
-        "signal_as_of": "2026-11-02",
-        "source_sha": "c70a46faf31277af9a0e839744acd39d20a457e4",
-        "signal_scan_date": "2026-11-03"
-      }
-    }
-  },
-  "buy_attempts": {
-    "227840": "2026-11-05",
-    "264450": "2026-11-05"
-  },
+  "buy_batch_scan_date": "2026-11-10",
+  "buy_batch_source_sha": "7db8c0639262cc5f83b32ff0ddac8a79c1f13c70",
+  "buy_permits": {},
+  "buy_attempts": {},
   "one_off_partial_consumed": "2026-11-10"
 }
