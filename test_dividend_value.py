@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from dividend_value.data import (PublicData, DataError, normalize_dividend,
                                  normalize_financial, parse_master, WIDTHS)
 from dividend_value.rules import evaluate, tax_quantity
-from dividend_value.screen import export, main
+from dividend_value.screen import export, main, screen_stock, months_ago
 
 
 def fixture():
@@ -206,6 +206,33 @@ class DataTests(unittest.TestCase):
                 self.assertEqual([r['code'] for r in rows],['000001','000002'])
                 self.assertFalse(any(r.get('query_failed') for r in rows))
                 self.assertEqual(screen.call_count,3)
+
+    def test_master_extracts_official_listing_date(self):
+        for market, listing_index in (('kospi', 49), ('kosdaq', 44)):
+            values=[' ' * w for w in WIDTHS[market]]
+            values[0]='ST'
+            for index in ((34,35,36) if market == 'kospi' else (29,30,31)):
+                values[index]='N'
+            values[listing_index]='20260109'
+            stock=parse_master('000001   KR7000001000가상주식'+''.join(values),market)[0]
+            self.assertEqual(stock['listing_date'], '2026-01-09')
+            self.assertTrue(stock['listing_date_verified'])
+
+    def test_screen_rejects_recent_and_risky_stocks_before_any_api_call(self):
+        api=Mock()
+        stock={'code':'000001','name':'synthetic','exclusion':None,
+            'risk_verified':True,'risk_flagged':False, 'review_reasons':[],
+            'sources':[], 'listing_date':'2026-05-01'}
+        self.assertEqual(months_ago(date(2026,11,9),7),date(2026,4,9))
+        young=screen_stock(api,stock,{},'2026-11-09',{})
+        self.assertEqual(young['exclusion'],'listed_less_than_7_calendar_months')
+        risky=screen_stock(api,dict(stock,listing_date='2020-01-01',risk_flagged=True),{},'2026-11-09',{})
+        self.assertEqual(risky['exclusion'],'suspended_liquidation_or_managed')
+        missing=screen_stock(api,dict(stock,listing_date=None),{},'2026-11-09',{})
+        self.assertIn('UNVERIFIED:listing_date',missing['review_reasons'])
+        api.daily.assert_not_called()
+        api.kis.assert_not_called()
+        api.dart.assert_not_called()
 
     def test_unverified_risk_is_review(self):
         f=fixture(); f['risk_verified']=False
