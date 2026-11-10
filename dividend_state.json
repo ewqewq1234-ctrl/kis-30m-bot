@@ -225,6 +225,19 @@
       "high": 7970.0,
       "armed": false,
       "exit_intent": null
+    },
+    "215000": {
+      "corp_code": "01067516",
+      "industry": "58",
+      "signal_as_of": "2026-11-09",
+      "source_sha": "7db8c0639262cc5f83b32ff0ddac8a79c1f13c70",
+      "signal_scan_date": "2026-11-10",
+      "qty": 1,
+      "avg_price": 35200.0,
+      "entry_id": "20261110-DIVIDEND-215000-BUY-DIV entry",
+      "high": 35200.0,
+      "armed": false,
+      "exit_intent": null
     }
   },
   "last_exits": {},
