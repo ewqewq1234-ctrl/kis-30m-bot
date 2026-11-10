@@ -46,7 +46,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git clone --single-branch --branch dividend-signals "https://github.com/${GITHUB_REPOSITORY}.git" signal-branch
+          auth_header="$(git config --get http.https://github.com/.extraheader)"
+          test -n "$auth_header"
+          git -c http.extraheader="$auth_header" clone --single-branch --branch dividend-signals "https://github.com/${GITHUB_REPOSITORY}.git" signal-branch
           cp signal-publish/signals.json signal-branch/signals.json
           cd signal-branch
           git config user.name 'github-actions[bot]'
@@ -54,7 +56,7 @@ jobs:
           git add signals.json
           if ! git diff --cached --quiet; then
             git commit -m 'Publish one-off 2026-11-10 age-verified partial PASS signal'
-            git push origin HEAD:dividend-signals
+            git -c http.extraheader="$auth_header" push origin HEAD:dividend-signals
           else
             echo 'Identical one-off signal already published'
           fi
