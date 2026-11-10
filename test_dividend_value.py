@@ -193,8 +193,12 @@ class DataTests(unittest.TestCase):
             client.market_master.return_value=[{'code':'000001'},{'code':'000002'}]
             client.corp_codes.return_value={}
             args=['--output',d,'--cache',str(Path(d,'cache')),'--max-symbols','1']
-            with patch('dividend_value.screen.PublicData',return_value=client), \
+            # Freeze the historical market clock: the fixture Oct-30
+            # session must not expire simply as the real calendar advances.
+            with patch('dividend_value.screen.datetime') as fake_clock, \
+                 patch('dividend_value.screen.PublicData',return_value=client), \
                  patch('dividend_value.screen.screen_stock',return_value=fixture()) as screen:
+                fake_clock.now.return_value = datetime(2026, 11, 3, 17, 0)
                 main(args)
                 self.assertEqual(screen.call_count,1)
                 # Second stock fails, then the next resume retries exactly it.

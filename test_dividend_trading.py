@@ -155,6 +155,78 @@ class TradingTests(unittest.TestCase):
             t.entries(self.bot,'token',{},100000,100000)
         self.bot.execute_order.assert_not_called()
 
+    def _prepare_nov10_partial_continuation(self):
+        self.bot.previous_exchange_session=lambda *a:date(2026,11,9)
+        self.snapshot(as_of='2026-11-09',scan_date='2026-11-10',partial=True,
+                      one_off_partial=True,universe_verified=True,
+                      unprocessed=0,query_failed=12)
+        candidate=self.files['/fake/dividend_signals.json']['candidates'][0]
+        candidate.update(query_complete=True,listing_date='2020-01-01',
+                         listing_date_verified=True,risk_verified=True,
+                         risk_flagged=False,exclusion=None)
+        self.files['/fake/dividend_state.json']={
+            'positions':{},'buy_week':'2026-46','buy_batch_status':'IN_PROGRESS',
+            'buy_batch_scan_date':'2026-11-10','buy_batch_source_sha':'sha',
+            'one_off_partial_consumed':'2026-11-10',
+            'buy_permits':{}, 'buy_attempts':{},'last_exits':{}}
+        return candidate
+
+    def test_nov10_partial_snapshot_continues_wednesday_thursday_friday_once_per_day(self):
+        self._prepare_nov10_partial_continuation()
+        self.bot.now_kst=lambda:datetime(2026,11,11,10,12)
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+            t.entries(self.bot,'token',{},100000,100000)
+            self.assertEqual(self.bot.execute_order.call_count,1)
+            permit=self.files['/fake/dividend_state.json']['buy_permits']['000002']
+            t.guard_order(self.bot,'000002',permit['qty'],'02',permit['metadata'])
+            self.bot.now_kst=lambda:datetime(2026,11,12,10,12)
+            t.entries(self.bot,'token',{},100000,100000)
+            self.assertEqual(self.bot.execute_order.call_count,2)
+            self.bot.now_kst=lambda:datetime(2026,11,13,14,42)
+            t.entries(self.bot,'token',{},100000,100000)
+            self.assertEqual(self.bot.execute_order.call_count,3)
+            self.assertEqual(self.files['/fake/dividend_state.json']['buy_batch_status'],'COMPLETE')
+            self.bot.now_kst=lambda:datetime(2026,11,16,10,12)
+            t.entries(self.bot,'token',{},100000,100000)
+        self.assertEqual(self.bot.execute_order.call_count,3)
+
+    def test_partial_continuation_rechecks_price_without_consuming_daily_attempt(self):
+        self._prepare_nov10_partial_continuation()
+        self.bot.now_kst=lambda:datetime(2026,11,11,10,12)
+        self.bot.get_current_price.return_value=120  # ceiling 110
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+            self.bot.execute_order.assert_not_called()
+            self.assertNotIn('000002',self.files['/fake/dividend_state.json']['buy_attempts'])
+            self.bot.get_current_price.return_value=100
+            t.entries(self.bot,'token',{},100000,100000)
+            self.bot.execute_order.assert_called_once()
+
+    def test_partial_continuation_needs_original_consumed_marker_and_same_source(self):
+        self._prepare_nov10_partial_continuation()
+        self.bot.now_kst=lambda:datetime(2026,11,11,10,12)
+        self.files['/fake/dividend_state.json'].pop('one_off_partial_consumed')
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.bot.execute_order.assert_not_called()
+        self.files['/fake/dividend_state.json']['one_off_partial_consumed']='2026-11-10'
+        self.files['/fake/dividend_state.json']['buy_batch_source_sha']='foreign-sha'
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.bot.execute_order.assert_not_called()
+
+    def test_partial_continuation_never_buys_ipo_or_unverified_candidate(self):
+        candidate=self._prepare_nov10_partial_continuation()
+        self.bot.now_kst=lambda:datetime(2026,11,11,10,12)
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            candidate['listing_date']='2026-08-01'
+            t.entries(self.bot,'token',{},100000,100000)
+            candidate['listing_date']='2020-01-01'
+            candidate['query_complete']=False
+            t.entries(self.bot,'token',{},100000,100000)
+        self.bot.execute_order.assert_not_called()
+
     def test_cooldown_counts_exchange_sessions(self):
         self.assertFalse(t.cooldown_complete(self.bot,'token','2026-11-02',date(2026,11,3)))
         self.assertTrue(t.cooldown_complete(self.bot,'token','2026-09-01',date(2026,11,3)))
