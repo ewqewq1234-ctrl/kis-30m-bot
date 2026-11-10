@@ -446,6 +446,26 @@
       },
       "confirmed_fill_qty": 2,
       "confirmed_fill_amt": 15940
+    },
+    {
+      "id": "20261110-DIVIDEND-215000-BUY-DIV entry",
+      "strategy": "DIVIDEND",
+      "code": "215000",
+      "side": "BUY",
+      "requested_qty": 1,
+      "status": "INTENT",
+      "created_at": "2026-11-10 14:44:39",
+      "odno": null,
+      "applied_fill_qty": 0,
+      "applied_fill_amount": 0,
+      "sell_cost_basis": 0.0,
+      "strategy_metadata": {
+        "corp_code": "01067516",
+        "industry": "58",
+        "signal_as_of": "2026-11-09",
+        "source_sha": "7db8c0639262cc5f83b32ff0ddac8a79c1f13c70",
+        "signal_scan_date": "2026-11-10"
+      }
     }
   ]
 }
