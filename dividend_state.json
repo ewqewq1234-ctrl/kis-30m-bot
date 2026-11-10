@@ -199,6 +199,19 @@
       "high": 50300.0,
       "armed": false,
       "exit_intent": null
+    },
+    "064960": {
+      "corp_code": "00398792",
+      "industry": "30",
+      "signal_as_of": "2026-11-09",
+      "source_sha": "7db8c0639262cc5f83b32ff0ddac8a79c1f13c70",
+      "signal_scan_date": "2026-11-10",
+      "qty": 1,
+      "avg_price": 24550.0,
+      "entry_id": "20261110-DIVIDEND-064960-BUY-DIV entry",
+      "high": 24550.0,
+      "armed": false,
+      "exit_intent": null
     }
   },
   "last_exits": {},
