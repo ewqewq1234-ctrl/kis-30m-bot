@@ -194,6 +194,13 @@ def parse_master(text, market):
             parts.append(tail[pos:pos+width].strip())
             pos += width
         flags = {key: parts[index] for key, index in indices.items()}
+        # KIS official KOSPI/KOSDAQ master "주식 상장 일자" fields (YYYYMMDD).
+        # KOSPI index 49; KOSDAQ index 44, indexed after the parsed fixed-width tail.
+        raw_listing = parts[49 if market == 'kospi' else 44]
+        try:
+            listing_date = date.fromisoformat(raw_listing).isoformat() if len(raw_listing) == 8 else None
+        except ValueError:
+            listing_date = None
         code, isin, name = head[:9].strip(), head[9:21].strip(), head[21:].strip()
         if not code or not name:
             raise DataError('master identity missing')
@@ -212,6 +219,7 @@ def parse_master(text, market):
         stocks.append({'code': code, 'isin': isin, 'name': name, 'market': market.upper(),
             'share_class': 'preferred' if flags['preferred'] not in {'0', ''} else 'common',
             'risk_verified': safe, 'risk_flagged': any(flags[k] == 'Y' for k in ('halt','liquidation','managed')),
+            'listing_date': listing_date, 'listing_date_verified': bool(listing_date),
             'exclusion': exclusion, 'master_group': group, 'master_flags': flags,
             'review_reasons': [] if group == 'ST' or exclusion else ['UNVERIFIED:security_group'],
             'sources': [MASTER + market + '_code.mst.zip']})
