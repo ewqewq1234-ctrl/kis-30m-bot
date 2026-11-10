@@ -216,6 +216,17 @@ def entries(bot, token, holdings, deposit, nav):
     if not regular and not continuation:
         return
     partial_oneoff = is_one_off_partial_snapshot(snapshot, today)
+    # The Nov 10 partial scan was approved ONCE as a new weekly batch.
+    # After the Tuesday batch starts, allow its exact immutable snapshot to
+    # continue Wednesday-Friday, just like a normal complete Tuesday scan.
+    # Never let an arbitrary partial scan start a new batch or carry past Friday.
+    partial_continuation = (
+        continuation
+        and ONE_OFF_PARTIAL_DATE < today <= ONE_OFF_PARTIAL_DATE + timedelta(days=3)
+        and is_one_off_partial_snapshot(snapshot, ONE_OFF_PARTIAL_DATE)
+        and state.get('one_off_partial_consumed') == ONE_OFF_PARTIAL_DATE.isoformat()
+    )
+    permitted_partial = partial_oneoff or partial_continuation
     if partial_oneoff and state.get('one_off_partial_consumed') == today.isoformat():
         return
     same_cycle = (
@@ -229,7 +240,7 @@ def entries(bot, token, holdings, deposit, nav):
     source_matches = (snapshot.get('source_sha') == expected if regular and not same_cycle
                       else snapshot.get('source_sha') == state.get('buy_batch_source_sha'))
     if (not snapshot or snapshot.get('as_of') != prev
-            or (snapshot.get('partial') and not partial_oneoff)
+            or (snapshot.get('partial') and not permitted_partial)
             or not snapshot.get('source_sha') or not source_matches):
         print('>> DIVIDEND: waiting for the complete Tuesday cycle snapshot to validate')
         return
@@ -273,7 +284,7 @@ def entries(bot, token, holdings, deposit, nav):
     for candidate in sorted(rows, key=lambda r:r['code']):
         if candidate.get('status') != 'PASS':
             continue
-        if partial_oneoff:
+        if permitted_partial:
             # The full-universe scan may have failed for other symbols. Never
             # buy an unverified symbol, or one younger than 7 calendar months.
             try:
@@ -316,7 +327,11 @@ def entries(bot, token, holdings, deposit, nav):
         ceiling = metrics.get('buy_ceiling')
         tax_qty = (metrics.get('tax_quantity') or {}).get('additional_qty')
         turnover = candidate.get('avg_turnover_20d')
-        if not ceiling or tax_qty is None or not turnover or price > ceiling:
+        if not ceiling or tax_qty is None or not turnover:
+            print(f'>> DIVIDEND {code}: 매수 필수 데이터 부족, 이번 실행 건너뜀 (화~금 재평가)')
+            continue
+        if price > ceiling:
+            print(f'>> DIVIDEND {code}: 현재가 {price:,.0f}원 > 매수상한 {ceiling:,.0f}원, 건너뜀 (화~금 재평가)')
             continue
         # Submit a valuation-capped limit even if the live price moves above it.
         # The order may wait for a pullback; it is reconciled before the next day.
@@ -341,6 +356,7 @@ def entries(bot, token, holdings, deposit, nav):
         if one_day_test:
             qty = min(qty, 1)
         if qty <= 0:
+            print(f'>> DIVIDEND {code}: 주문 가능 수량 0주 (현금·업종·전략 한도 또는 배당세 제한), 화~금 재평가')
             continue
         metadata = {'corp_code':corp,'industry':sector,'signal_as_of':prev,
                     'source_sha':snapshot['source_sha'],'signal_scan_date':scan_date}
