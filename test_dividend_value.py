@@ -1,6 +1,6 @@
 """Synthetic rule tests; these fixtures are NOT market screening results."""
 import copy
-from datetime import date
+from datetime import date, datetime
 import json
 from pathlib import Path
 import tempfile
@@ -11,6 +11,7 @@ from dividend_value.data import (PublicData, DataError, normalize_dividend,
                                  normalize_financial, parse_master, WIDTHS)
 from dividend_value.rules import evaluate, tax_quantity
 from dividend_value.screen import export, main, screen_stock, months_ago
+from dividend_value.recover_oneoff import build_once
 
 
 def fixture():
@@ -233,6 +234,36 @@ class DataTests(unittest.TestCase):
         api.daily.assert_not_called()
         api.kis.assert_not_called()
         api.dart.assert_not_called()
+
+    def test_oneoff_reuses_immutable_complete_universe_but_checks_pass_age(self):
+        with tempfile.TemporaryDirectory() as d, patch.dict('os.environ', {'GITHUB_SHA':'a'*40}):
+            root=Path(d)
+            rows=[]
+            master=[]
+            for i in range(4408):
+                code=f'{i:06d}'
+                rows.append({'code':code,'status':'PASS' if i < 23 else 'EXCLUDED',
+                    'query_complete':True,'query_failed':False,
+                    'risk_verified':True,'risk_flagged':False,'exclusion':None,
+                    'checks':{},'metrics':{}})
+                master.append({'code':code,'listing_date':'2026-05-01' if i == 0 else '2020-01-01',
+                    'listing_date_verified':True,'risk_verified':True,
+                    'risk_flagged':False,'exclusion':None})
+            meta={'as_of':'2026-11-09','executed_kst':'2026-11-10T12:02:00+09:00',
+                  'universe_verified':True,'unprocessed':0,'query_failed':12,
+                  'universe_total':4408,'counts':{'PASS':23,'REVIEW':41},
+                  'partial':True}
+            (root/'run_metadata.json').write_text(json.dumps(meta))
+            (root/'screening_details.json').write_text(json.dumps(rows))
+            api=Mock();api.market_master.return_value=master
+            result=build_once(root, now=datetime(2026,11,10,14,10), api=api)
+            self.assertTrue(result['partial'])
+            self.assertEqual(result['source_sha'],'a'*40)
+            self.assertEqual(len(result['candidates']),22)
+            self.assertEqual(result['excluded_by_age_or_risk']['000000'], 'IPO_AGE_OR_RISK_NOT_ELIGIBLE')
+            api.market_master.assert_called_once()
+            with self.assertRaises(SystemExit):
+                build_once(root, now=datetime(2026,11,11,10,0), api=api)
 
     def test_unverified_risk_is_review(self):
         f=fixture(); f['risk_verified']=False
