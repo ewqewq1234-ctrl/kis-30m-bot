@@ -4,6 +4,7 @@ Research only: does not import the bot, read account secrets, or submit orders.
 """
 import argparse
 from collections import Counter
+import calendar
 import csv
 from datetime import date, datetime, timedelta
 import hashlib
@@ -19,6 +20,14 @@ from .data import (PublicData, DataError, atomic_json, normalize_dividend,
 from .rules import DEFAULT_CONFIG, evaluate, number
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def months_ago(day, months):
+    """Calendar-month cutoff, not a rough trading-session approximation."""
+    month_index = day.year * 12 + day.month - 1 - months
+    year, month_zero = divmod(month_index, 12)
+    month = month_zero + 1
+    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
 
 
 def financial_facts(api, facts, corp, as_of, cfg):
@@ -104,6 +113,21 @@ def screen_stock(api, stock, corp_codes, as_of, cfg):
              sources=list(stock.get('sources', [])))
     f['corp_code'] = corp_codes.get(f['code'])
     if f.get('exclusion'):
+        return f
+    # Classify untradable stocks and IPOs BEFORE expensive KIS/DART queries.
+    if f.get('risk_flagged') is True:
+        f['exclusion'] = 'suspended_liquidation_or_managed'
+        return f
+    if f.get('risk_verified') is not True:
+        f['review_reasons'].append('UNVERIFIED:market_risk_flags')
+        return f
+    try:
+        listing_day = date.fromisoformat(str(f.get('listing_date') or ''))
+    except ValueError:
+        f['review_reasons'].append('UNVERIFIED:listing_date')
+        return f
+    if listing_day > months_ago(date.fromisoformat(as_of), 7):
+        f['exclusion'] = 'listed_less_than_7_calendar_months'
         return f
     bars = api.daily(f['code'], date.fromisoformat(as_of))
     if len(bars) < cfg['turnover_sessions'] or bars[-1]['date'] != as_of:

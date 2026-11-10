@@ -1,0 +1,62 @@
+name: One-off verified dividend snapshot 2026-11-10
+
+on:
+  # Adding this exact workflow to main triggers the one-off publication once.
+  # Date and source-artifact checks in Python fail closed on future reruns.
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/dividend-oneoff-20261110.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: dividend-value-read-only-screen
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Verify dividend logic with offline tests
+        run: python ci/run_offline_tests.py test_dividend_value test_dividend_trading
+      - name: Download fixed 2026-11-10 official research artifact (no account API)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42746704303 --name dividend-value-42746704303 --dir results/dividend-value
+          test -s results/dividend-value/screening_details.json
+          test -s results/dividend-value/run_metadata.json
+      - name: Verify every PASS listing age against today's official KIS master
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: python -m dividend_value.recover_oneoff
+      - name: Publish exactly one partial, PASS-only dated signal (no orders)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth_header="$(git config --get http.https://github.com/.extraheader)"
+          test -n "$auth_header"
+          git -c http.extraheader="$auth_header" clone --single-branch --branch dividend-signals "https://github.com/${GITHUB_REPOSITORY}.git" signal-branch
+          cp signal-publish/signals.json signal-branch/signals.json
+          cd signal-branch
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add signals.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Publish one-off 2026-11-10 age-verified partial PASS signal'
+            git -c http.extraheader="$auth_header" push origin HEAD:dividend-signals
+          else
+            echo 'Identical one-off signal already published'
+          fi
