@@ -1,0 +1,188 @@
+name: Tuesday dividend/value Telegram performance report
+
+on:
+  schedule:
+    # KST Tuesday 16:40, retry 18:20 and 21:10 if scan is not finished.
+    # Deduplication is persisted separately from the trading bot state.
+    - cron: '40 7 * * 2'
+    - cron: '20 9 * * 2'
+    - cron: '10 12 * * 2'
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: dividend-tuesday-telegram-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Verify report logic without any external networking
+        run: python ci/run_offline_tests.py test_dividend_weekly_report
+      - name: Validate actual KST Tuesday report window
+        id: clock
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now = datetime.now(ZoneInfo("Asia/Seoul"))
+          active = now.weekday() == 1 and now.hour >= 16
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"active={str(active).lower()}\n")
+              f.write(f"report_date={now.date().isoformat()}\n")
+          print(f"KST={now.isoformat()} reporting_window={active}")
+          PY
+      - name: Locate today's completed screening artifact
+        if: steps.clock.outputs.active == 'true'
+        id: scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/dividend-value-screen.yml/runs?event=schedule&per_page=25" > /tmp/dividend-screen-runs.json
+          run_id="$(python3 - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import json
+          now = datetime.now(ZoneInfo("Asia/Seoul")).date()
+          runs = json.load(open("/tmp/dividend-screen-runs.json"))["workflow_runs"]
+          matched = []
+          for r in runs:
+              created = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
+              if (created.astimezone(ZoneInfo("Asia/Seoul")).date() == now
+                      and r.get("event") == "schedule"
+                      and r.get("status") == "completed"):
+                  matched.append(r)
+          print(max(matched, key=lambda r:r["created_at"])["id"] if matched else "")
+          PY
+          )"
+          if [[ -z "$run_id" ]]; then
+            echo "Today's scheduled screen is not yet complete; later Tuesday retry will check again."
+            exit 1
+          fi
+          mkdir -p results/dividend-value
+          gh run download "$run_id" --name "dividend-value-$run_id" --dir results/dividend-value
+          test -s results/dividend-value/run_metadata.json
+          test -s results/dividend-value/screening_details.json
+          printf 'screen_run=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+          echo "Read-only screen artifact loaded from run $run_id"
+      - name: Read durable dividend filled orders and positions (no brokerage account API)
+        if: steps.scan.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p report-input
+          auth_header="$(git config --get http.https://github.com/.extraheader)"
+          test -n "$auth_header"
+          git -c http.extraheader="$auth_header" fetch --depth=1 origin bot-state
+          git show FETCH_HEAD:trade_history.json > report-input/trade_history.json
+          git show FETCH_HEAD:dividend_state.json > report-input/dividend_state.json
+          echo "Bot-state read-only copies obtained"
+      - name: Inspect independent weekly delivery ledger
+        if: steps.scan.outcome == 'success'
+        id: ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p report-ledger
+          cd report-ledger
+          git init -q
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          auth_header="$(git -C .. config --get http.https://github.com/.extraheader)"
+          test -n "$auth_header"
+          if git -c http.extraheader="$auth_header" ls-remote --exit-code --heads origin dividend-report-ledger >/dev/null 2>&1; then
+            git -c http.extraheader="$auth_header" fetch --depth=1 origin dividend-report-ledger
+            git checkout -B dividend-report-ledger FETCH_HEAD
+          else
+            git checkout --orphan dividend-report-ledger
+            printf '{}\n' > last_report.json
+            git add last_report.json
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Initialize independent weekly report ledger'
+            git -c http.extraheader="$auth_header" push origin HEAD:refs/heads/dividend-report-ledger
+          fi
+          cd ..
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          state = json.loads(Path('report-ledger/last_report.json').read_text())
+          report_day = os.environ['REPORT_DATE']
+          send = str(state.get('date') != report_day).lower()
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write(f"send={send}\n")
+          print(f"Weekly reporting date={report_day} not_yet_attempted={send}")
+          PY
+        env:
+          REPORT_DATE: ${{ steps.clock.outputs.report_date }}
+      - name: Calculate confirmed dividends strategy returns and KIS latest quotes
+        if: steps.ledger.outputs.send == 'true'
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+        run: python -m dividend_value.weekly_telegram render
+      - name: Claim this Tuesday report BEFORE Telegram (no duplicate on ambiguous send)
+        if: steps.ledger.outputs.send == 'true'
+        shell: bash
+        env:
+          REPORT_DATE: ${{ steps.clock.outputs.report_date }}
+          SCREEN_RUN: ${{ steps.scan.outputs.screen_run }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('report-ledger/last_report.json')
+          state = json.loads(path.read_text())
+          if state.get('date') == os.environ['REPORT_DATE']:
+              raise SystemExit('Already claimed by another run; no Telegram send')
+          path.write_text(json.dumps({
+              'date':os.environ['REPORT_DATE'], 'status':'ATTEMPTED',
+              'run_id':os.environ['GITHUB_RUN_ID'],
+              'screen_run_id':os.environ['SCREEN_RUN']
+          },indent=2)+'\n')
+          PY
+          cd report-ledger
+          git add last_report.json
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Claim Tuesday report before delivery'
+          auth_header="$(git -C .. config --get http.https://github.com/.extraheader)"
+          git -c http.extraheader="$auth_header" push origin HEAD:refs/heads/dividend-report-ledger
+      - name: Send Tuesday screening, buy/sell, realized and mark-to-market Telegram report
+        if: steps.ledger.outputs.send == 'true'
+        id: delivery
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m dividend_value.weekly_telegram send
+      - name: Mark Telegram report delivered
+        if: steps.delivery.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('report-ledger/last_report.json')
+          data = json.loads(p.read_text())
+          if data.get('status') != 'ATTEMPTED':
+              raise SystemExit('Missing claimed report marker')
+          data['status'] = 'SENT'
+          p.write_text(json.dumps(data,indent=2)+'\n')
+          PY
+          cd report-ledger
+          git add last_report.json
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Mark Tuesday dividend Telegram report delivered'
+          auth_header="$(git -C .. config --get http.https://github.com/.extraheader)"
+          git -c http.extraheader="$auth_header" push origin HEAD:refs/heads/dividend-report-ledger
