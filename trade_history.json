@@ -490,6 +490,26 @@
       },
       "confirmed_fill_qty": 1,
       "confirmed_fill_amt": 41550
+    },
+    {
+      "id": "20261110-DIVIDEND-284740-BUY-DIV entry",
+      "strategy": "DIVIDEND",
+      "code": "284740",
+      "side": "BUY",
+      "requested_qty": 1,
+      "status": "INTENT",
+      "created_at": "2026-11-10 14:45:21",
+      "odno": null,
+      "applied_fill_qty": 0,
+      "applied_fill_amount": 0,
+      "sell_cost_basis": 0.0,
+      "strategy_metadata": {
+        "corp_code": "01267684",
+        "industry": "76",
+        "signal_as_of": "2026-11-09",
+        "source_sha": "7db8c0639262cc5f83b32ff0ddac8a79c1f13c70",
+        "signal_scan_date": "2026-11-10"
+      }
     }
   ]
 }
