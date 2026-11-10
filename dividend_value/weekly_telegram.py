@@ -255,6 +255,24 @@ def build_messages(metadata, screening_rows, history, position_state, quotes, *,
                 mark = "시세 미확인 / 수익률 계산 제외"
             lines.append(f"{name}({code}) {p['qty']}주 · 평단 {krw(avg)} · {mark}")
         messages.extend(chunk_lines(lines, 2900))
+    # Research candidates are informational; no orders or guaranteed yields.
+    if valid_scan:
+        passed = [row for row in screening_rows
+                  if isinstance(row, dict) and row.get("status") == "PASS"
+                  and row.get("query_complete") is True and not row.get("query_failed")]
+        def yield_fraction(row):
+            try:
+                value = float((row.get("metrics") or {}).get("base_yield") or 0)
+                return value if math.isfinite(value) and value >= 0 else 0.0
+            except (ValueError, TypeError):
+                return 0.0
+        if passed:
+            lines = ["<b>⑥ PASS 후보 중 공시 기반 배당수익률 상위 5종목</b>"]
+            for row in sorted(passed, key=yield_fraction, reverse=True)[:5]:
+                lines.append(f"{html.escape(str(row.get('name') or row.get('code')))}"
+                             f"({html.escape(str(row.get('code')))}): {yield_fraction(row)*100:.2f}%")
+            lines.append("※ 공시 기준 참고 수익률이며 실제 매수·배당 지급을 보장하지 않습니다.")
+            messages.extend(chunk_lines(lines, 2900))
     return messages
 
 
