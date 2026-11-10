@@ -212,6 +212,19 @@
       "high": 24550.0,
       "armed": false,
       "exit_intent": null
+    },
+    "090350": {
+      "corp_code": "00583442",
+      "industry": "20",
+      "signal_as_of": "2026-11-09",
+      "source_sha": "7db8c0639262cc5f83b32ff0ddac8a79c1f13c70",
+      "signal_scan_date": "2026-11-10",
+      "qty": 2,
+      "avg_price": 7970.0,
+      "entry_id": "20261110-DIVIDEND-090350-BUY-DIV entry",
+      "high": 7970.0,
+      "armed": false,
+      "exit_intent": null
     }
   },
   "last_exits": {},
