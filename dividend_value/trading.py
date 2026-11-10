@@ -10,6 +10,29 @@ from .rules import DEFAULT_CONFIG
 
 STRATEGY = 'DIVIDEND'
 ONE_DAY_ENTRY_DATE = date(2026, 11, 2)
+ONE_OFF_PARTIAL_DATE = date(2026, 11, 10)
+
+
+def is_one_off_partial_snapshot(snapshot, today):
+    """Permit only the verified-PASS subset of the Nov 10 completed-universe scan."""
+    return (today == ONE_OFF_PARTIAL_DATE
+            and snapshot.get('one_off_partial') is True
+            and snapshot.get('partial') is True
+            and snapshot.get('scan_date') == today.isoformat()
+            and snapshot.get('universe_verified') is True
+            and snapshot.get('unprocessed') == 0
+            and isinstance(snapshot.get('query_failed'), int)
+            and snapshot.get('query_failed') > 0
+            and not snapshot.get('blocker'))
+
+
+def _months_ago(iso_date, months):
+    import calendar
+    as_of = date.fromisoformat(iso_date)
+    month_idx = as_of.year * 12 + as_of.month - 1 - months
+    year, zero_month = divmod(month_idx, 12)
+    month = zero_month + 1
+    return date(year, month, min(as_of.day, calendar.monthrange(year, month)[1]))
 
 
 def entry_day(now):
@@ -192,6 +215,9 @@ def entries(bot, token, holdings, deposit, nav):
     )
     if not regular and not continuation:
         return
+    partial_oneoff = is_one_off_partial_snapshot(snapshot, today)
+    if partial_oneoff and state.get('one_off_partial_consumed') == today.isoformat():
+        return
     same_cycle = (
         state.get('buy_week') == week
         and state.get('buy_batch_scan_date') == scan_date
@@ -202,7 +228,8 @@ def entries(bot, token, holdings, deposit, nav):
     prev = bot.previous_exchange_session(token, scan_day).isoformat()
     source_matches = (snapshot.get('source_sha') == expected if regular and not same_cycle
                       else snapshot.get('source_sha') == state.get('buy_batch_source_sha'))
-    if (not snapshot or snapshot.get('as_of') != prev or snapshot.get('partial')
+    if (not snapshot or snapshot.get('as_of') != prev
+            or (snapshot.get('partial') and not partial_oneoff)
             or not snapshot.get('source_sha') or not source_matches):
         print('>> DIVIDEND: waiting for the complete Tuesday cycle snapshot to validate')
         return
@@ -211,6 +238,10 @@ def entries(bot, token, holdings, deposit, nav):
         bot.fail('DIVIDEND malformed candidate snapshot')
     if not any(isinstance(row, dict) and row.get('status') == 'PASS' for row in rows):
         return
+    # Only a single invocation can consume this incomplete, strictly scoped snapshot.
+    if partial_oneoff and not bot.DRY_RUN:
+        state['one_off_partial_consumed'] = today.isoformat()
+        bot.save_json(path(bot), state)
     # Start one durable cycle on Tuesday. Wednesday-Friday reuse this exact
     # snapshot and re-evaluate only symbols not already filled or pending.
     if regular and not same_cycle and not bot.DRY_RUN:
@@ -242,6 +273,21 @@ def entries(bot, token, holdings, deposit, nav):
     for candidate in sorted(rows, key=lambda r:r['code']):
         if candidate.get('status') != 'PASS':
             continue
+        if partial_oneoff:
+            # The full-universe scan may have failed for other symbols. Never
+            # buy an unverified symbol, or one younger than 7 calendar months.
+            try:
+                listed = date.fromisoformat(candidate['listing_date'])
+                if (not candidate.get('query_complete')
+                        or not candidate.get('listing_date_verified')
+                        or listed > _months_ago(prev, 7)
+                        or candidate.get('risk_verified') is not True
+                        or candidate.get('risk_flagged') is True
+                        or candidate.get('query_failed')
+                        or candidate.get('exclusion')):
+                    continue
+            except (ValueError, KeyError, TypeError):
+                continue
         code = candidate['code']
         if code in pending_codes:
             print(f'>> DIVIDEND {code}: prior buy remains pending; skip duplicate and continue other candidates')
