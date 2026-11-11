@@ -196,7 +196,7 @@
       "qty": 1,
       "avg_price": 50300.0,
       "entry_id": "20261110-DIVIDEND-025540-BUY-DIV entry",
-      "high": 51100.0,
+      "high": 51500,
       "armed": false,
       "exit_intent": null
     },
