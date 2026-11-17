@@ -304,7 +304,7 @@ class PublicationTests(unittest.TestCase):
             self.assertIsNone(publication_block_reason(
                 self.complete_meta(), rows, datetime(2026,11,17,6,0)))
 
-    def test_review_blocks_publication_without_failing_workflow(self):
+    def test_review_rows_do_not_block_fully_scanned_pass_publication(self):
         from dividend_value.publish import publication_block_reason
         meta=self.complete_meta()
         meta['validation_incomplete']=True
@@ -312,8 +312,24 @@ class PublicationTests(unittest.TestCase):
         meta['counts']['FAIL']=0
         rows=[{'code':'000001','status':'PASS'}, {'code':'000002','status':'REVIEW'}]
         with patch.dict('os.environ', {'GITHUB_SHA':'a'*40}):
-            self.assertIn('REVIEW', publication_block_reason(
+            self.assertIsNone(publication_block_reason(
                 meta, rows, datetime(2026,11,17,6,0)))
+
+    def test_review_count_and_row_status_must_match_metadata(self):
+        from dividend_value.publish import publication_block_reason
+        meta=self.complete_meta()
+        meta['validation_incomplete']=True
+        meta['counts']['REVIEW']=1
+        meta['counts']['FAIL']=0
+        rows=[{'code':'000001','status':'PASS'}, {'code':'000002','status':'REVIEW'}]
+        with patch.dict('os.environ', {'GITHUB_SHA':'a'*40}):
+            bad=copy.deepcopy(meta)
+            bad['validation_incomplete']=False
+            self.assertIsNotNone(publication_block_reason(
+                bad, rows, datetime(2026,11,17,6,0)))
+            self.assertIsNotNone(publication_block_reason(
+                meta, [rows[0], {'code':'000002','status':'FAIL'}],
+                datetime(2026,11,17,6,0)))
 
     def test_partial_or_failed_or_unprocessed_scan_is_never_published(self):
         from dividend_value.publish import publication_block_reason
