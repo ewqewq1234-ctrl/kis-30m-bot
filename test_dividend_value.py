@@ -290,5 +290,53 @@ class DataTests(unittest.TestCase):
         self.assertEqual(evaluate(f)['status'],'REVIEW')
 
 
+class PublicationTests(unittest.TestCase):
+    def complete_meta(self):
+        return {'as_of':'2026-11-13','universe_total':2,'universe_verified':True,
+            'partial':False,'validation_incomplete':False,'blocker':None,
+            'unprocessed':0,'query_failed':0,
+            'counts':{'PASS':1,'FAIL':1,'REVIEW':0,'EXCLUDED':0}}
+
+    def test_only_fully_validated_complete_universe_is_publishable(self):
+        from dividend_value.publish import publication_block_reason
+        rows=[{'code':'000001','status':'PASS'}, {'code':'000002','status':'FAIL'}]
+        with patch.dict('os.environ', {'GITHUB_SHA':'a'*40}):
+            self.assertIsNone(publication_block_reason(
+                self.complete_meta(), rows, datetime(2026,11,17,6,0)))
+
+    def test_review_blocks_publication_without_failing_workflow(self):
+        from dividend_value.publish import publication_block_reason
+        meta=self.complete_meta()
+        meta['validation_incomplete']=True
+        meta['counts']['REVIEW']=1
+        meta['counts']['FAIL']=0
+        rows=[{'code':'000001','status':'PASS'}, {'code':'000002','status':'REVIEW'}]
+        with patch.dict('os.environ', {'GITHUB_SHA':'a'*40}):
+            self.assertIn('REVIEW', publication_block_reason(
+                meta, rows, datetime(2026,11,17,6,0)))
+
+    def test_partial_or_failed_or_unprocessed_scan_is_never_published(self):
+        from dividend_value.publish import publication_block_reason
+        rows=[{'code':'000001','status':'PASS'}, {'code':'000002','status':'FAIL'}]
+        with patch.dict('os.environ', {'GITHUB_SHA':'a'*40}):
+            for field, value in [('partial',True),('query_failed',1),('unprocessed',1),
+                                 ('universe_verified',False),('blocker','API unavailable')]:
+                meta=self.complete_meta()
+                meta[field]=value
+                self.assertIsNotNone(publication_block_reason(
+                    meta, rows, datetime(2026,11,17,6,0)), field)
+
+    def test_universe_count_mismatch_and_wrong_day_are_blocked(self):
+        from dividend_value.publish import publication_block_reason
+        with patch.dict('os.environ', {'GITHUB_SHA':'a'*40}):
+            self.assertIsNotNone(publication_block_reason(
+                self.complete_meta(), [{'code':'000001','status':'PASS'}],
+                datetime(2026,11,17,6,0)))
+            self.assertIsNotNone(publication_block_reason(
+                self.complete_meta(),
+                [{'code':'000001','status':'PASS'},{'code':'000002','status':'FAIL'}],
+                datetime(2026,11,18,6,0)))
+
+
 if __name__=='__main__':
     unittest.main()
