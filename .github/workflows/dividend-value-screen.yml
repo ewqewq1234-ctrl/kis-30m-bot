@@ -18,9 +18,6 @@ on:
         description: '800 = resumable batch; 0 = full scan'
         default: '800'
         required: true
-  push:
-    branches: [main]
-    paths: [.github/workflows/dividend-value-screen.yml]
   schedule:
     - cron: '0 21 * * 1'  # Monday 21:00 UTC = Tuesday 06:00 KST; latest completed session.
 
@@ -65,9 +62,9 @@ jobs:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
-          # Scheduled scans are complete-universe runs. Manual runs default to
-          # resumable 800-symbol batches; push runs are bounded smoke checks.
-          MAX_SYMBOLS: ${{ github.event_name == 'push' && '800' || inputs.max_symbols || '0' }}
+          # Scheduled scans use the full universe; manual runs default to
+          # resumable 800-symbol batches. Workflow edits never start a scan.
+          MAX_SYMBOLS: ${{ inputs.max_symbols || '0' }}
           PYTHONUNBUFFERED: '1'
         run: python -m dividend_value.screen --max-symbols "$MAX_SYMBOLS"
       - name: Persist exclusion registry (no screening results or credentials)
