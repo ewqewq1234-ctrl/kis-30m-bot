@@ -349,7 +349,8 @@ def main(argv=None):
     except (DataError, ValueError, KeyError) as exc:
         meta['blocker'] = str(exc) if isinstance(exc, DataError) else 'invalid official data or configuration'
     finally:
-        meta.update({'preflight_excluded_skipped': locals().get('preflight_skipped', 0),
+        meta.update({'batch_attempted': locals().get('attempted', 0),
+            'preflight_excluded_skipped': locals().get('preflight_skipped', 0),
             'api_calls':api.calls, 'cache_hits':api.cache_hits,
             'download_bytes':api.bytes, 'runtime_seconds':round(time.monotonic()-start,2),
             'cache_bytes':sum(p.stat().st_size for p in Path(args.cache).glob('*.json'))})
