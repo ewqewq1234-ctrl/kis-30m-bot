@@ -15,8 +15,8 @@ on:
   workflow_dispatch:
     inputs:
       max_symbols:
-        description: '0 = all; positive = partial batch, resume on the same cutoff'
-        default: '0'
+        description: '800 = safe batch; rerun until unprocessed=0. 0 = all in one run'
+        default: '800'
         required: true
   push:
     branches: [main]
