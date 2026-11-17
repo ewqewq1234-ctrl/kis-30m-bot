@@ -51,6 +51,14 @@ jobs:
           path: .screen-cache
           key: dividend-value-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: dividend-value-v1-
+      - name: Restore persistent exclusion registry
+        shell: bash
+        run: |
+          mkdir -p .screen-cache
+          if git ls-remote --exit-code --heads origin dividend-screen-state >/dev/null 2>&1; then
+            git fetch origin dividend-screen-state
+            git show FETCH_HEAD:exclusion-registry.json > .screen-cache/exclusion-registry.json || true
+          fi
       - name: Read official market data and disclosures (no account or order API)
         env:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
@@ -59,6 +67,21 @@ jobs:
           MAX_SYMBOLS: ${{ inputs.max_symbols || '0' }}
           PYTHONUNBUFFERED: '1'
         run: python -m dividend_value.screen --max-symbols "$MAX_SYMBOLS"
+      - name: Persist exclusion registry (no screening results or credentials)
+        if: always() && hashFiles('.screen-cache/exclusion-registry.json') != ''
+        shell: bash
+        run: |
+          git config user.name kis-bot
+          git config user.email kis-bot@users.noreply.github.com
+          mkdir -p /tmp/dividend-screen-state
+          cp .screen-cache/exclusion-registry.json /tmp/dividend-screen-state/
+          cd /tmp/dividend-screen-state
+          git init -q
+          git checkout --orphan dividend-screen-state
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git add exclusion-registry.json
+          git commit -m 'Persist verified screening exclusions'
+          git -c http.extraheader="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)" push --force origin HEAD:refs/heads/dividend-screen-state
       - name: Publish complete Tuesday snapshot (no orders)
         if: github.event_name == 'schedule' || github.event_name == 'push'
         shell: bash
