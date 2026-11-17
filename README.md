@@ -103,8 +103,8 @@ all securities are processed, official requests have no failures, and REVIEW is
 zero. An otherwise complete scan containing REVIEW results finishes without
 publishing a new signal snapshot; this is an intentional safe skip, not a
 workflow failure. Manual dispatch defaults to an 800-symbol resumable batch
-(set `max_symbols=0` for a full scan). A workflow-file push runs an 800-symbol
-smoke scan and never publishes signals.
+(set `max_symbols=0` for a full scan). Editing or pushing code does not start a
+screening run; scans start only by manual dispatch or the weekly schedule.
 
 ## Aggressive BAA universe review (2026-10-19 KST)
 
