@@ -1,5 +1,6 @@
-"""Build a Tuesday signal snapshot only from a fully validated scan."""
+"""Publish only fully scanned PASS candidates; REVIEW rows remain isolated."""
 from collections.abc import Mapping
+from collections import Counter
 from datetime import datetime
 import json
 import os
@@ -26,12 +27,19 @@ def publication_block_reason(meta, rows, now):
         return 'universe total is missing or invalid'
     if len(rows) != universe_total or sum(counts[k] for k in required_counts) != universe_total:
         return 'scan does not cover the verified universe'
+    row_counts = Counter(r.get('status') for r in rows if isinstance(r, Mapping))
+    if len(row_counts) == 0 or any(row_counts.get(k, 0) != counts[k] for k in required_counts):
+        return 'row statuses do not match verified result counts'
+    if sum(row_counts.values()) != len(rows):
+        return 'one or more result rows have an invalid status'
     if meta.get('universe_verified') is not True:
         return 'market universe was not verified'
     if meta.get('partial') is not False:
         return 'scan is marked partial'
-    if meta.get('validation_incomplete') is not False or counts['REVIEW'] != 0:
-        return 'one or more securities remain unverified (REVIEW)'
+    # REVIEW is allowed at universe level, but those rows are never candidates.
+    # The only incomplete-validation flag permitted is the presence of REVIEW rows.
+    if meta.get('validation_incomplete') is not (counts['REVIEW'] > 0):
+        return 'validation-incomplete flag does not match REVIEW count'
     if meta.get('blocker'):
         return 'scan has a blocking error'
     if meta.get('unprocessed') != 0:
@@ -60,7 +68,7 @@ def main():
         'source_sha': os.environ['GITHUB_SHA'],
         'scan_date': now.date().isoformat(),
         'partial': False,
-        'validation_incomplete': False,
+        'validation_incomplete': meta['counts']['REVIEW'] > 0,
         'candidates': [r for r in rows if r.get('status') == 'PASS'],
         'review_alerts': {
             r['code']: [k for k in ('no_30pct_cut', 'capital_not_impaired')
@@ -69,7 +77,8 @@ def main():
             if any(r.get('checks', {}).get(k) is False
                    for k in ('no_30pct_cut', 'capital_not_impaired'))
         },
-        'review_count': 0,
+        'review_count': meta['counts']['REVIEW'],
+        'review_codes': sorted(r['code'] for r in rows if r.get('status') == 'REVIEW' and r.get('code')),
     })
     print('Verified Tuesday signal snapshot created.')
     return 0
