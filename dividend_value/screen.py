@@ -154,7 +154,8 @@ def screen_stock(api, stock, corp_codes, as_of, cfg):
     f = dict(stock, as_of=as_of, review_reasons=list(stock.get('review_reasons', [])),
              sources=list(stock.get('sources', [])))
     f['corp_code'] = corp_codes.get(f['code'])
-    if f.get('exclusion'):
+    if f.get('exclusion') or f.get('share_class') == 'preferred':
+        f['exclusion'] = f.get('exclusion') or 'preferred_share'
         return f
     # Classify untradable stocks and IPOs BEFORE expensive KIS/DART queries.
     if f.get('risk_flagged') is True:
@@ -171,6 +172,17 @@ def screen_stock(api, stock, corp_codes, as_of, cfg):
     if listing_day > months_ago(date.fromisoformat(as_of), 7):
         f['exclusion'] = 'listed_less_than_7_calendar_months'
         return f
+    if not f.get('corp_code'):
+        f['review_reasons'].append('UNVERIFIED:DART_corporate_mapping')
+        return f
+    profile = api.dart('company.json', {'corp_code': f['corp_code']}, version='company-profile-v1')
+    f['industry'] = profile.get('induty_code')
+    if str(f['industry'] or '')[:2] in {'64','65','66'}:
+        f['exclusion'] = 'financial_company'
+        return f
+    if not f['industry']:
+        f['review_reasons'].append('UNVERIFIED:industry')
+        return f
     bars = api.daily(f['code'], date.fromisoformat(as_of))
     if len(bars) < cfg['turnover_sessions'] or bars[-1]['date'] != as_of:
         raise DataError('insufficient daily history or stale last trading session')
@@ -180,15 +192,6 @@ def screen_stock(api, stock, corp_codes, as_of, cfg):
     quote = api.kis(PRICE, {'FID_COND_MRKT_DIV_CODE': 'J', 'FID_INPUT_ISCD': f['code']}).get('output', {})
     f['kis_indicative_valuation'] = {key: quote.get(key) for key in ('per', 'pbr', 'eps', 'bps', 'stac_month')}
     f['valuation'] = {key: number(quote.get(key)) for key in ('per', 'pbr', 'eps', 'bps')}
-    if not f.get('corp_code'):
-        f['review_reasons'].append('UNVERIFIED:DART_corporate_mapping')
-        return f
-    # Industry is always retrieved even for low-liquidity financial companies.
-    profile = api.dart('company.json', {'corp_code': f['corp_code']})
-    f['industry'] = profile.get('induty_code')
-    if str(f['industry'])[:2] in {'64','65','66'}:
-        f['exclusion'] = 'financial_company'
-        return f
     indicative = [number(quote.get('per')), number(quote.get('pbr'))]
     if f['avg_turnover_20d'] < cfg['min_daily_turnover_krw']:
         return f  # Proven liquidity failure; avoid all historical requests.
@@ -300,6 +303,8 @@ def main(argv=None):
         corp_codes = api.corp_codes()
         signature = hashlib.sha256(json.dumps([as_of,cfg_hash,strategy_nav,holdings,universe],sort_keys=True).encode()).hexdigest()
         checkpoint = Path(args.cache) / ('checkpoint-' + signature + '.json')
+        registry_path = Path(args.cache) / 'exclusion-registry.json'
+        registry = load_exclusion_registry(registry_path)
         if checkpoint.exists():
             rows = json.loads(checkpoint.read_text(encoding='utf-8'))
         # Failed requests are retried on resume; successful records are not duplicated.
@@ -313,7 +318,17 @@ def main(argv=None):
                 break
             attempted += 1
             try:
-                facts = screen_stock(api, stock, corp_codes, as_of, cfg)
+                exclusion = preflight_exclusion(stock, as_of, registry)
+                if exclusion:
+                    facts = dict(stock, as_of=as_of, exclusion=exclusion,
+                                 review_reasons=list(stock.get('review_reasons', [])),
+                                 sources=list(stock.get('sources', [])))
+                else:
+                    facts = screen_stock(api, stock, corp_codes, as_of, cfg)
+                    if facts.get('exclusion'):
+                        registry['items'][stock['code']] = {
+                            'fingerprint': exclusion_fingerprint(stock),
+                            'reason': facts['exclusion'], 'kind': 'static', 'updated_as_of': as_of}
                 row = evaluate(facts, cfg, strategy_nav=strategy_nav, existing_qty=holdings.get(stock['code'],0))
                 row['query_complete'] = True
             except (DataError, ValueError, KeyError):
@@ -324,6 +339,7 @@ def main(argv=None):
                 row['metrics']['tax_quantity'].pop('existing_qty', None)
             rows.append(row)
             atomic_json(checkpoint, rows)
+            atomic_json(registry_path, registry)
             print(f"processed={len(rows)}/{len(universe)} status={row['status']}", flush=True)
     except (DataError, ValueError, KeyError) as exc:
         meta['blocker'] = str(exc) if isinstance(exc, DataError) else 'invalid official data or configuration'
@@ -331,6 +347,8 @@ def main(argv=None):
         meta.update({'api_calls':api.calls, 'cache_hits':api.cache_hits,
             'download_bytes':api.bytes, 'runtime_seconds':round(time.monotonic()-start,2),
             'cache_bytes':sum(p.stat().st_size for p in Path(args.cache).glob('*.json'))})
+        if checkpoint is not None:
+            atomic_json(Path(args.cache) / 'exclusion-registry.json', registry)
         export(args.output, rows, meta)
         Path(args.output, 'execution.log').write_text(json.dumps(meta, ensure_ascii=False,indent=2),encoding='utf-8')
     print(json.dumps(meta, ensure_ascii=False))
