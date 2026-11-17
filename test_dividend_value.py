@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from dividend_value.data import (PublicData, DataError, normalize_dividend,
                                  normalize_financial, parse_master, WIDTHS)
 from dividend_value.rules import evaluate, tax_quantity
-from dividend_value.screen import export, main, screen_stock, months_ago
+from dividend_value.screen import export, main, screen_stock, months_ago, preflight_exclusion
 from dividend_value.recover_oneoff import build_once
 
 
@@ -222,6 +222,22 @@ class DataTests(unittest.TestCase):
             stock=parse_master('000001   KR7000001000가상주식'+''.join(values),market)[0]
             self.assertEqual(stock['listing_date'], '2026-01-09')
             self.assertTrue(stock['listing_date_verified'])
+
+    def test_persistent_exclusion_registry_skips_unchanged_and_rechecks_changed_master(self):
+        stock={'code':'000001','isin':'KR7000001000','master_group':'ST','share_class':'common',
+            'exclusion':'ETF/ETN','risk_verified':True,'risk_flagged':False,'listing_date':'2020-01-01'}
+        registry={'version':1,'items':{}}
+        self.assertEqual(preflight_exclusion(stock,'2026-11-17',registry),'ETF/ETN')
+        self.assertEqual(preflight_exclusion(stock,'2026-11-24',registry),'ETF/ETN')
+        changed=dict(stock,exclusion=None,master_group='ST')
+        self.assertIsNone(preflight_exclusion(changed,'2026-11-24',registry))
+
+    def test_persistent_ipo_exclusion_expires_after_seven_calendar_months(self):
+        stock={'code':'000002','isin':'KR7000002000','master_group':'ST','share_class':'common',
+            'exclusion':None,'risk_verified':True,'risk_flagged':False,'listing_date':'2026-05-01'}
+        registry={'version':1,'items':{}}
+        self.assertEqual(preflight_exclusion(stock,'2026-11-17',registry),'listed_less_than_7_calendar_months')
+        self.assertIsNone(preflight_exclusion(stock,'2026-12-01',registry))
 
     def test_screen_rejects_recent_and_risky_stocks_before_any_api_call(self):
         api=Mock()
