@@ -214,6 +214,8 @@ def parse_master(text, market):
             exclusion = 'REIT'
         elif group in {'BC', 'PF', 'IF', 'MF', 'DR', 'SW', 'SR', 'FS'}:
             exclusion = 'not_common_or_preferred_domestic_stock:' + group
+        if flags['preferred'] not in {'0', ''} and not exclusion:
+            exclusion = 'preferred_share'
         safe = all(flags[key] in {'N', 'Y'} for key in ('halt', 'liquidation', 'managed'))
         # Unrecognized groups are REVIEW; never assume a fund is a normal share.
         stocks.append({'code': code, 'isin': isin, 'name': name, 'market': market.upper(),
