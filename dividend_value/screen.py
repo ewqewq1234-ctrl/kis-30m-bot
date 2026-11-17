@@ -328,7 +328,9 @@ def main(argv=None):
                     if facts.get('exclusion'):
                         registry['items'][stock['code']] = {
                             'fingerprint': exclusion_fingerprint(stock),
-                            'reason': facts['exclusion'], 'kind': 'static', 'updated_as_of': as_of}
+                            'reason': facts['exclusion'], 'kind': 'static', 'updated_as_of': as_of,
+'recheck_after': (date.fromisoformat(as_of) + timedelta(days=180)).isoformat()
+    if facts['exclusion'] == 'financial_company' else None}
                 row = evaluate(facts, cfg, strategy_nav=strategy_nav, existing_qty=holdings.get(stock['code'],0))
                 row['query_complete'] = True
             except (DataError, ValueError, KeyError):
