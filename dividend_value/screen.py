@@ -108,6 +108,48 @@ def financial_facts(api, facts, corp, as_of, cfg):
     return facts
 
 
+def exclusion_fingerprint(stock):
+    fields = ('isin', 'master_group', 'share_class', 'exclusion', 'risk_verified', 'risk_flagged', 'listing_date')
+    payload = {key: stock.get(key) for key in fields}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+def load_exclusion_registry(path):
+    try:
+        value = json.loads(Path(path).read_text(encoding='utf-8'))
+        return value if isinstance(value, dict) and value.get('version') == 1 else {'version': 1, 'items': {}}
+    except (OSError, ValueError, TypeError):
+        return {'version': 1, 'items': {}}
+
+def preflight_exclusion(stock, as_of, registry):
+    code = stock['code']
+    fingerprint = exclusion_fingerprint(stock)
+    today = date.fromisoformat(as_of)
+    item = registry.setdefault('items', {}).get(code)
+    if item and item.get('fingerprint') == fingerprint:
+        until = item.get('recheck_after')
+        if not until or today < date.fromisoformat(until):
+            return item.get('reason')
+    reason = stock.get('exclusion')
+    if stock.get('share_class') == 'preferred':
+        reason = reason or 'preferred_share'
+    if stock.get('risk_flagged') is True:
+        reason = 'suspended_liquidation_or_managed'
+    if reason:
+        registry['items'][code] = {'fingerprint': fingerprint, 'reason': reason,
+            'kind': 'risk' if reason == 'suspended_liquidation_or_managed' else 'static', 'updated_as_of': as_of}
+        return reason
+    try:
+        listing_day = date.fromisoformat(str(stock.get('listing_date') or ''))
+    except ValueError:
+        return None
+    if listing_day > months_ago(today, 7):
+        eligible = months_ago(listing_day, -7)
+        registry['items'][code] = {'fingerprint': fingerprint, 'reason': 'listed_less_than_7_calendar_months',
+            'kind': 'temporary', 'recheck_after': eligible.isoformat(), 'updated_as_of': as_of}
+        return 'listed_less_than_7_calendar_months'
+    registry['items'].pop(code, None)
+    return None
+
 def screen_stock(api, stock, corp_codes, as_of, cfg):
     f = dict(stock, as_of=as_of, review_reasons=list(stock.get('review_reasons', [])),
              sources=list(stock.get('sources', [])))
