@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       max_symbols:
-        description: '800 = safe batch; rerun until unprocessed=0. 0 = all in one run'
+        description: '800 = resumable batch; 0 = full scan'
         default: '800'
         required: true
   push:
@@ -54,53 +54,66 @@ jobs:
       - name: Restore persistent exclusion registry
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p .screen-cache
           if git ls-remote --exit-code --heads origin dividend-screen-state >/dev/null 2>&1; then
             git fetch origin dividend-screen-state
-            git show FETCH_HEAD:exclusion-registry.json > .screen-cache/exclusion-registry.json || true
+            git show FETCH_HEAD:exclusion-registry.json > .screen-cache/exclusion-registry.json
           fi
       - name: Read official market data and disclosures (no account or order API)
         env:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
-          MAX_SYMBOLS: ${{ inputs.max_symbols || '0' }}
+          # Scheduled scans are complete-universe runs. Manual runs default to
+          # resumable 800-symbol batches; push runs are bounded smoke checks.
+          MAX_SYMBOLS: ${{ github.event_name == 'push' && '800' || inputs.max_symbols || '0' }}
           PYTHONUNBUFFERED: '1'
         run: python -m dividend_value.screen --max-symbols "$MAX_SYMBOLS"
       - name: Persist exclusion registry (no screening results or credentials)
         if: always() && hashFiles('.screen-cache/exclusion-registry.json') != ''
         shell: bash
         run: |
-          git config user.name kis-bot
-          git config user.email kis-bot@users.noreply.github.com
+          set -euo pipefail
           mkdir -p /tmp/dividend-screen-state
           cp .screen-cache/exclusion-registry.json /tmp/dividend-screen-state/
           cd /tmp/dividend-screen-state
           git init -q
           git checkout --orphan dividend-screen-state
+          git config user.name kis-bot
+          git config user.email kis-bot@users.noreply.github.com
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
           git add exclusion-registry.json
           git commit -m 'Persist verified screening exclusions'
-          git -c http.extraheader="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)" push --force origin HEAD:refs/heads/dividend-screen-state
+          EXTRAHEADER="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)"
+          test -n "$EXTRAHEADER"
+          git -c http.extraheader="$EXTRAHEADER" push --force origin HEAD:refs/heads/dividend-screen-state
       - name: Publish complete Tuesday snapshot (no orders)
-        if: github.event_name == 'schedule' || github.event_name == 'push'
+        if: github.event_name == 'schedule'
         shell: bash
         run: |
+          set -euo pipefail
           python -m dividend_value.publish
-          cd signal-publish
-          git init -q
-          git checkout --orphan dividend-signals
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git add signals.json
-          git -c user.name=kis-bot -c user.email=kis-bot@users.noreply.github.com commit -m 'Tuesday verified dividend candidates'
-          git -c http.extraheader="$(git -C .. config --get http.https://github.com/.extraheader)" push --force origin HEAD:refs/heads/dividend-signals
+          if [ -f signal-publish/signals.json ]; then
+            cd signal-publish
+            git init -q
+            git checkout --orphan dividend-signals
+            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+            git add signals.json
+            git -c user.name=kis-bot -c user.email=kis-bot@users.noreply.github.com commit -m 'Tuesday verified dividend candidates'
+            EXTRAHEADER="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)"
+            test -n "$EXTRAHEADER"
+            git -c http.extraheader="$EXTRAHEADER" push --force origin HEAD:refs/heads/dividend-signals
+          else
+            echo "Publication safely skipped: scan is incomplete or not eligible."
+          fi
       - uses: actions/cache/save@v4
         if: always()
         with:
           path: .screen-cache
           key: dividend-value-v1-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && hashFiles('results/dividend-value/**') != ''
         with:
           name: dividend-value-${{ github.run_id }}
           path: results/dividend-value/
