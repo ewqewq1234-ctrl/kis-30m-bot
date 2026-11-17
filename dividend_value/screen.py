@@ -31,7 +31,7 @@ def months_ago(day, months):
 
 
 def financial_facts(api, facts, corp, as_of, cfg):
-    company = api.dart('company.json', {'corp_code': corp})
+    company = api.dart('company.json', {'corp_code': corp}, version='company-profile-v1')
     industry = str(company.get('induty_code', ''))
     facts['industry'] = industry or None
     if industry[:2] in {'64','65','66'}:
