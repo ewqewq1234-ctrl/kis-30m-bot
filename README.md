@@ -96,6 +96,14 @@ Run `python -m dividend_value.screen`; required research secrets are only
 `KIS_APP_KEY`, `KIS_APP_SECRET`, and `DART_API_KEY`. Account numbers are not used.
 The weekly read-only workflow runs Monday 21:00 UTC / Tuesday 06:00 KST and computes its
 actual latest completed exchange-session cutoff. Its downloadable artifacts
+
+The scheduled run scans the full verified universe and publishes signals only when
+all securities are processed, official requests have no failures, and REVIEW is
+zero. An otherwise complete scan containing REVIEW results finishes without
+publishing a new signal snapshot; this is an intentional safe skip, not a
+workflow failure. Manual dispatch defaults to an 800-symbol resumable batch
+(set `max_symbols=0` for a full scan). A workflow-file push runs an 800-symbol
+smoke scan and never publishes signals.
 include HTML, all four result CSVs, detailed evidence, metadata and logs.
 
 ## Aggressive BAA universe review (2026-10-19 KST)
