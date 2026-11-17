@@ -311,6 +311,7 @@ def main(argv=None):
         rows = [r for r in rows if not r.get('query_failed')]
         done = {r['code'] for r in rows}
         attempted = 0
+        preflight_skipped = 0
         for stock in universe:
             if stock['code'] in done:
                 continue
@@ -320,6 +321,7 @@ def main(argv=None):
             try:
                 exclusion = preflight_exclusion(stock, as_of, registry)
                 if exclusion:
+                    preflight_skipped += 1
                     facts = dict(stock, as_of=as_of, exclusion=exclusion,
                                  review_reasons=list(stock.get('review_reasons', [])),
                                  sources=list(stock.get('sources', [])))
@@ -341,12 +343,14 @@ def main(argv=None):
                 row['metrics']['tax_quantity'].pop('existing_qty', None)
             rows.append(row)
             atomic_json(checkpoint, rows)
-            atomic_json(registry_path, registry)
+            if len(rows) % 50 == 0:
+                atomic_json(registry_path, registry)
             print(f"processed={len(rows)}/{len(universe)} status={row['status']}", flush=True)
     except (DataError, ValueError, KeyError) as exc:
         meta['blocker'] = str(exc) if isinstance(exc, DataError) else 'invalid official data or configuration'
     finally:
-        meta.update({'api_calls':api.calls, 'cache_hits':api.cache_hits,
+        meta.update({'preflight_excluded_skipped': locals().get('preflight_skipped', 0),
+            'api_calls':api.calls, 'cache_hits':api.cache_hits,
             'download_bytes':api.bytes, 'runtime_seconds':round(time.monotonic()-start,2),
             'cache_bytes':sum(p.stat().st_size for p in Path(args.cache).glob('*.json'))})
         if checkpoint is not None:
