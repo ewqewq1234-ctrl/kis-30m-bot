@@ -250,7 +250,7 @@ def validate_environment():
 
 
 def api_request(method, path, token=None, *, tr_id=None, params=None, body=None,
-                timeout=10, retries=1, tr_cont=None):
+                timeout=10, retries=3, tr_cont=None):
     """Fail-closed KIS request. Retry only transient GET errors; never POST."""
     global ACCESS_TOKEN
     headers = {"content-type": "application/json; charset=utf-8", "appkey": KIS_APP_KEY,
