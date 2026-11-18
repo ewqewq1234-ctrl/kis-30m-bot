@@ -52,7 +52,7 @@ class APIResilienceTests(unittest.TestCase):
     def test_default_get_retries_three_times_with_exponential_backoff(self):
         responses = [FakeResponse(500), FakeResponse(502), FakeResponse(503),
                      FakeResponse(200, {"rt_cd": "0", "value": "ok"})]
-        with patch.object(bot.SESSION, 'request', side_effect=responses) as request, \\
+        with patch.object(bot.SESSION, 'request', side_effect=responses) as request, \
              patch.object(bot.time, 'sleep') as sleep:
             payload, _ = bot.api_request('GET', '/read', 'token')
         self.assertEqual(payload['value'], 'ok')
