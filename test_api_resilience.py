@@ -49,6 +49,24 @@ class APIResilienceTests(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         sleep.assert_called_once()
 
+    def test_default_get_retries_three_times_with_exponential_backoff(self):
+        responses = [FakeResponse(500), FakeResponse(502), FakeResponse(503),
+                     FakeResponse(200, {"rt_cd": "0", "value": "ok"})]
+        with patch.object(bot.SESSION, 'request', side_effect=responses) as request, \\
+             patch.object(bot.time, 'sleep') as sleep:
+            payload, _ = bot.api_request('GET', '/read', 'token')
+        self.assertEqual(payload['value'], 'ok')
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1.0, 2.0, 4.0])
+
+    def test_default_get_stops_after_four_transient_failures(self):
+        with patch.object(bot.SESSION, 'request', return_value=FakeResponse(500)) as request, \\
+             patch.object(bot.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(bot.TradeSafetyError, 'HTTP 500'):
+                bot.api_request('GET', '/read', 'token')
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual(sleep.call_count, 3)
+
     def test_balance_get_retries_twice_on_503_then_succeeds(self):
         success = FakeResponse(200, {
             "rt_cd": "0", "output1": [],
