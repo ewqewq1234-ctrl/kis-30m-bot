@@ -60,7 +60,7 @@ class APIResilienceTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [1.0, 2.0, 4.0])
 
     def test_default_get_stops_after_four_transient_failures(self):
-        with patch.object(bot.SESSION, 'request', return_value=FakeResponse(500)) as request, \\
+        with patch.object(bot.SESSION, 'request', return_value=FakeResponse(500)) as request, \
              patch.object(bot.time, 'sleep') as sleep:
             with self.assertRaisesRegex(bot.TradeSafetyError, 'HTTP 500'):
                 bot.api_request('GET', '/read', 'token')
