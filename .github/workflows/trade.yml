@@ -3,7 +3,8 @@ name: KIS Bot Persistent State
 on:
   workflow_dispatch:
   schedule:
-    # Explicit UTC slots = KST Monday-Friday 07:12 through 17:12.
+    # Explicit UTC slots = KST Monday-Friday 06:00 through 17:12.
+    - cron: '0 21 * * 0-4'  # KST 06:00 pre-market health/readiness check
     - cron: '12 22 * * 0-4'  # KST 07:12
     - cron: '12 23 * * 0-4'  # KST 08:12
     - cron: '12 0 * * 1-5'  # KST 09:12
@@ -49,7 +50,7 @@ jobs:
       BOT_STATE_DIR: ${{ github.workspace }}/persistent_state
 
     steps:
-      - name: Exit immediately outside weekday market/report hours
+      - name: Exit immediately outside weekday pre-market/market/report hours
         id: runtime
         shell: bash
         env:
@@ -61,7 +62,7 @@ jobs:
           from datetime import datetime
           from zoneinfo import ZoneInfo
           now = datetime.now(ZoneInfo("Asia/Seoul"))
-          active = now.weekday() < 5 and 9 <= now.hour < 17
+          active = now.weekday() < 5 and 6 <= now.hour < 17
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"active={str(active).lower()}\n")
           print(f"Actual KST time: {now.isoformat()}; active={active}")

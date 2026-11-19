@@ -1916,6 +1916,8 @@ def hourly_runtime_mode(now):
     if now.weekday() >= 5:
         return "OFF"
     hm = now.strftime("%H:%M")
+    if "06:00" <= hm < MARKET_START:
+        return "PRE_MARKET"
     if "15:00" <= hm < "17:00":
         return "TRADE_REPORT" if hm <= MARKET_END else "REPORT"
     return "TRADE" if MARKET_START <= hm <= MARKET_END else "OFF"
@@ -1954,6 +1956,7 @@ def main():
             print(">> 장외/주말 즉시 종료 (브로커·알림 호출 없음)")
             return
         if mode == "REPORT":
+            print(">> MARKET_CLOSED: 장 마감 후 보고 전용 실행 (주문 없음)")
             send_hourly_session_report()
             return
     print("==================================================")
@@ -1971,9 +1974,6 @@ def main():
         except BlockingIOError:
             fail("이미 실행 중인 봇이 있습니다. 중복 실행 중단")
         token = get_access_token()
-        if not is_market_open_today(token):
-            print(f">> 🏖️ 오늘({now:%Y-%m-%d})은 한국거래소 휴장일입니다.")
-            return
         if RUN_REPORT_ONLY and not RUN_MIDDAY_REPORT:
             fail("보고 전용 실행에 RUN_MIDDAY_REPORT=Y가 없습니다.")
         if not RUN_REPORT_ONLY and not hourly:
@@ -1986,8 +1986,20 @@ def main():
                 )
                 return
         # Reconcile before any trading decisions; never silently swallow a safety exception.
-        assert_no_pending(token, allow_pending_dividend_buys=True)
         holdings, deposit, tot_eval = get_account_balance(token)
+        if PORTFOLIO["dividend_value_orders_enabled"]:
+            print(">> 배당 스냅샷 준비 상태: " +
+                  dividend_trading.snapshot_readiness(sys.modules[__name__], now.date()))
+        market_open = is_market_open_today(token)
+        if not market_open:
+            print(f">> MARKET_CLOSED: 오늘({now:%Y-%m-%d})은 한국거래소 휴장일입니다. "
+                  "주문 없이 다음 예정 장중 슬롯으로 이월합니다.")
+            return
+        if not order_window():
+            reason = "PRE_MARKET_DEFERRED" if now.strftime("%H:%M") < MARKET_START else "MARKET_CLOSED"
+            print(f">> {reason}: 정규장 외 실행이므로 주문 없이 다음 예정 장중 슬롯으로 이월합니다.")
+            return
+        assert_no_pending(token, allow_pending_dividend_buys=True)
         if RUN_REPORT_ONLY:
             handle_daily_closing_report(token, holdings, tot_eval)
             print("\n>> 🏁 보고 전용 실행이 완료되었습니다 (매매 전략 미실행).")

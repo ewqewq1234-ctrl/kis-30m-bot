@@ -65,6 +65,20 @@ def valid_snapshot(snapshot, today, max_age_days=7):
     return True, None
 
 
+def snapshot_readiness(bot, today):
+    snapshot = bot.load_json(bot.BASE_DIR / 'dividend_signals.json', {})
+    valid, reason = valid_snapshot(snapshot, today)
+    if not valid:
+        return f'not ready: {reason}'
+    age = (today - date.fromisoformat(snapshot['scan_date'])).days
+    snapshot_type = 'partial' if snapshot.get('partial') else 'complete'
+    pass_count = sum(
+        isinstance(row, dict) and row.get('status') == 'PASS'
+        for row in snapshot['candidates']
+    )
+    return f'ready type={snapshot_type} scan_date={snapshot["scan_date"]} age_days={age} PASS={pass_count}'
+
+
 def path(bot):
     return bot.BASE_DIR / 'dividend_state.json'
 

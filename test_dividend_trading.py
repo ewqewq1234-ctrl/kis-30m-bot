@@ -130,6 +130,23 @@ class TradingTests(unittest.TestCase):
         self.bot.execute_order.assert_called_once()
         self.assertEqual(self.bot.execute_order.call_args.args[1],'000002')
 
+    def test_premarket_defers_without_resetting_cycle_then_market_open_resumes(self):
+        self.bot.now_kst=lambda:datetime(2026,11,4,6,18)
+        self.snapshot(scan_date='2026-11-03')
+        cycle={'positions':{},'buy_week':'2026-45','buy_batch_status':'IN_PROGRESS',
+            'buy_batch_scan_date':'2026-11-03','buy_batch_source_sha':'sha',
+            'buy_permits':{},'buy_attempts':{},'last_exits':{}}
+        self.files['/fake/dividend_state.json']=copy.deepcopy(cycle)
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.assertEqual(self.files['/fake/dividend_state.json'],cycle)
+        self.bot.execute_order.assert_not_called()
+        self.bot.now_kst=lambda:datetime(2026,11,4,9,12)
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.bot.execute_order.assert_called_once()
+        self.assertEqual(self.bot.execute_order.call_args.args[1],'000002')
+
     def test_stale_and_corrupted_snapshots_have_exact_rejections(self):
         self.bot.now_kst=lambda:datetime(2026,11,20,10,12)
         self.snapshot(scan_date='2026,11-01')
