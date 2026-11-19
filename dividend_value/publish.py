@@ -1,4 +1,4 @@
-"""Publish only fully scanned PASS candidates; REVIEW rows remain isolated."""
+"""Publish complete snapshots separately from partial screening checkpoints."""
 from collections.abc import Mapping
 from collections import Counter
 from datetime import datetime
@@ -11,9 +11,7 @@ from .data import atomic_json
 
 
 def publication_block_reason(meta, rows, now):
-    """Return a reason to skip publication; never publish a partial/unverified scan."""
-    if now.weekday() != 1:
-        return 'not the scheduled Tuesday KST publication day'
+    """Return a reason to skip complete publication; REVIEW rows are not blockers."""
     if not isinstance(meta, Mapping) or not isinstance(rows, list):
         return 'invalid scan metadata or result rows'
     counts = meta.get('counts')
@@ -53,34 +51,54 @@ def publication_block_reason(meta, rows, now):
     return None
 
 
+def build_snapshot(meta, rows, now, source_sha):
+    counts = meta['counts']
+    return {
+        'scan_date': now.date().isoformat(),
+        'as_of': meta['as_of'],
+        'source_sha': source_sha,
+        'partial': bool(meta['partial']),
+        'universe_verified': meta['universe_verified'],
+        'universe_total': meta['universe_total'],
+        'processed_total': len(rows),
+        'unprocessed': meta['unprocessed'],
+        'query_failed': meta['query_failed'],
+        'validation_incomplete': bool(counts['REVIEW']),
+        'counts': counts,
+        'candidates': [r for r in rows if r.get('status') == 'PASS'],
+        'review_alerts': {
+            r['code']: r.get('reasons', [])
+            for r in rows
+            if r.get('status') == 'REVIEW' and r.get('code')
+        },
+        'publication_status': 'COMPLETE' if not meta['partial'] else 'PARTIAL_CHECKPOINT',
+        'published_at': now.isoformat(),
+    }
+
+
 def main():
     root = Path('results/dividend-value')
     meta = json.loads((root / 'run_metadata.json').read_text(encoding='utf-8'))
     rows = json.loads((root / 'screening_details.json').read_text(encoding='utf-8'))
     now = datetime.now(ZoneInfo('Asia/Seoul'))
+    sha = os.environ.get('GITHUB_SHA')
+    if not sha:
+        print('Signal publication safely skipped: GITHUB_SHA is missing')
+        return 0
+    snapshot = build_snapshot(meta, rows, now, sha)
+    partial_path = Path('signal-publish/partial-signals.json')
+    if meta.get('partial') is True:
+        partial_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(partial_path, snapshot)
+        print('Verified PASS partial checkpoint preserved separately.')
+        return 0
     reason = publication_block_reason(meta, rows, now)
     if reason:
         print(f'Signal publication safely skipped: {reason}')
         return 0
 
-    atomic_json('signal-publish/signals.json', {
-        'as_of': meta['as_of'],
-        'source_sha': os.environ['GITHUB_SHA'],
-        'scan_date': now.date().isoformat(),
-        'partial': False,
-        'validation_incomplete': meta['counts']['REVIEW'] > 0,
-        'candidates': [r for r in rows if r.get('status') == 'PASS'],
-        'review_alerts': {
-            r['code']: [k for k in ('no_30pct_cut', 'capital_not_impaired')
-                        if r.get('checks', {}).get(k) is False]
-            for r in rows
-            if any(r.get('checks', {}).get(k) is False
-                   for k in ('no_30pct_cut', 'capital_not_impaired'))
-        },
-        'review_count': meta['counts']['REVIEW'],
-        'review_codes': sorted(r['code'] for r in rows if r.get('status') == 'REVIEW' and r.get('code')),
-    })
-    print('Verified Tuesday signal snapshot created.')
+    atomic_json('signal-publish/signals.json', snapshot)
+    print('Verified complete signal snapshot created.')
     return 0
 
 

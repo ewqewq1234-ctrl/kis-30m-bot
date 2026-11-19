@@ -39,6 +39,32 @@ def entry_day(now):
     return now.weekday() == 1 or now.date() == ONE_DAY_ENTRY_DATE
 
 
+def valid_snapshot(snapshot, today, max_age_days=7):
+    if not isinstance(snapshot, dict):
+        return False, 'No valid snapshot'
+    try:
+        scan_day = date.fromisoformat(snapshot.get('scan_date'))
+        age = (today - scan_day).days
+    except (TypeError, ValueError):
+        return False, 'Invalid snapshot date'
+    if age < 0 or age > max_age_days:
+        return False, f'Snapshot stale or future-dated ({age} days)'
+    if snapshot.get('partial') is True:
+        if snapshot.get('publication_status') not in ('PARTIAL_CHECKPOINT', None):
+            return False, 'Partial snapshot publication status is invalid'
+        if snapshot.get('publication_status') is None and snapshot.get('one_off_partial') is not True:
+            return False, 'Arbitrary partial snapshot is not allowed'
+        if snapshot.get('universe_verified') is not True:
+            return False, 'Partial snapshot universe is unverified'
+    elif snapshot.get('partial') is not False:
+        return False, 'Snapshot completeness is invalid'
+    if not snapshot.get('source_sha'):
+        return False, 'Snapshot source SHA is missing'
+    if not isinstance(snapshot.get('candidates'), list):
+        return False, 'Snapshot candidates are malformed'
+    return True, None
+
+
 def path(bot):
     return bot.BASE_DIR / 'dividend_state.json'
 
@@ -197,6 +223,10 @@ def entries(bot, token, holdings, deposit, nav):
     state = reconcile_ownership(bot, holdings)
     week = f'{now.isocalendar().year}-{now.isocalendar().week}'
     snapshot = bot.load_json(bot.BASE_DIR / 'dividend_signals.json', {})
+    snapshot_valid, snapshot_reason = valid_snapshot(snapshot, today)
+    if not snapshot_valid:
+        print(f'>> DIVIDEND: no purchase: {snapshot_reason}')
+        return
     scan_date = snapshot.get('scan_date')
     try:
         scan_day = date.fromisoformat(scan_date)
@@ -204,7 +234,14 @@ def entries(bot, token, holdings, deposit, nav):
         return
     expected = os.getenv('GITHUB_SHA')
     cycle_tuesday = today - timedelta(days=now.weekday() - 1) if 1 <= now.weekday() <= 4 else None
-    regular = (entry_day(now) and scan_day == today)
+    regular = (
+        (today == ONE_DAY_ENTRY_DATE and scan_day == today)
+        or (
+            entry_day(now)
+            and scan_day.weekday() == 1
+            and 0 <= (today - scan_day).days <= 7
+        )
+    )
     continuation = (
         cycle_tuesday is not None
         and scan_day == cycle_tuesday

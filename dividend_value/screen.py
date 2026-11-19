@@ -257,7 +257,7 @@ def main(argv=None):
     parser.add_argument('--cache', default='.screen-cache')
     parser.add_argument('--config', default=str(Path(__file__).with_name('config.json')))
     parser.add_argument('--as-of', help='latest completed exchange session only; historical scans unsupported')
-    parser.add_argument('--max-symbols', type=int, default=0, help='0=all; resume same cutoff/config on next run')
+    parser.add_argument('--max-symbols', type=int, default=500, help='500=batch; 0=all')
     parser.add_argument('--account-nav', type=float, help='total NAV; dividend strategy receives 40%%')
     parser.add_argument('--holdings', type=Path, help='optional local JSON code: existing quantity (never uploaded)')
     args = parser.parse_args(argv)
@@ -343,7 +343,7 @@ def main(argv=None):
                 row['metrics']['tax_quantity'].pop('existing_qty', None)
             rows.append(row)
             atomic_json(checkpoint, rows)
-            if len(rows) % 50 == 0:
+            if len(rows) % 500 == 0:
                 atomic_json(registry_path, registry)
             print(f"processed={len(rows)}/{len(universe)} status={row['status']}", flush=True)
     except (DataError, ValueError, KeyError) as exc:

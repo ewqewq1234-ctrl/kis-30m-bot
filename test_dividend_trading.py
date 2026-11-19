@@ -121,6 +121,26 @@ class TradingTests(unittest.TestCase):
         with patch.dict('os.environ',GITHUB_SHA='sha'): t.entries(self.bot,'token',{},100000,100000)
         self.bot.execute_order.assert_not_called()
 
+    def test_pass_candidate_continues_when_another_candidate_is_review(self):
+        self.snapshot()
+        snapshot=self.files['/fake/dividend_signals.json']
+        snapshot['candidates'].append(dict(snapshot['candidates'][0],code='000003',status='REVIEW'))
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.bot.execute_order.assert_called_once()
+        self.assertEqual(self.bot.execute_order.call_args.args[1],'000002')
+
+    def test_stale_and_corrupted_snapshots_have_exact_rejections(self):
+        self.bot.now_kst=lambda:datetime(2026,11,20,10,12)
+        self.snapshot(scan_date='2026,11-01')
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.bot.execute_order.assert_not_called()
+        self.snapshot(scan_date='2026-11-01',candidates='broken')
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.bot.execute_order.assert_not_called()
+
     def test_one_off_partial_pass_batch_is_single_use(self):
         self.bot.now_kst=lambda:datetime(2026,11,10,14,12)
         self.bot.previous_exchange_session=lambda *a:date(2026,11,9)

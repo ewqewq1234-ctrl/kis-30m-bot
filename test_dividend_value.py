@@ -348,7 +348,7 @@ class PublicationTests(unittest.TestCase):
             self.assertIsNotNone(publication_block_reason(
                 self.complete_meta(), [{'code':'000001','status':'PASS'}],
                 datetime(2026,11,17,6,0)))
-            self.assertIsNotNone(publication_block_reason(
+            self.assertIsNone(publication_block_reason(
                 self.complete_meta(),
                 [{'code':'000001','status':'PASS'},{'code':'000002','status':'FAIL'}],
                 datetime(2026,11,18,6,0)))

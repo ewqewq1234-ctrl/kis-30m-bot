@@ -98,8 +98,11 @@ jobs:
         if: steps.runtime.outputs.active == 'true'
         shell: bash
         run: |
+          set -e
           if git fetch --depth=1 origin dividend-signals; then
             git show FETCH_HEAD:signals.json > persistent_state/dividend_signals.json
+          elif git fetch --depth=1 origin dividend-partial-signals; then
+            git show FETCH_HEAD:partial-signals.json > persistent_state/dividend_signals.json
           fi
 
       - uses: actions/setup-python@v5
