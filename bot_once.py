@@ -1995,15 +1995,16 @@ def main():
             print(f">> MARKET_CLOSED: 오늘({now:%Y-%m-%d})은 한국거래소 휴장일입니다. "
                   "주문 없이 다음 예정 장중 슬롯으로 이월합니다.")
             return
+        if RUN_REPORT_ONLY:
+            assert_no_pending(token, allow_pending_dividend_buys=True)
+            handle_daily_closing_report(token, holdings, tot_eval)
+            print("\n>> 🏁 보고 전용 실행이 완료되었습니다 (매매 전략 미실행).")
+            return
         if not order_window():
             reason = "PRE_MARKET_DEFERRED" if now.strftime("%H:%M") < MARKET_START else "MARKET_CLOSED"
             print(f">> {reason}: 정규장 외 실행이므로 주문 없이 다음 예정 장중 슬롯으로 이월합니다.")
             return
         assert_no_pending(token, allow_pending_dividend_buys=True)
-        if RUN_REPORT_ONLY:
-            handle_daily_closing_report(token, holdings, tot_eval)
-            print("\n>> 🏁 보고 전용 실행이 완료되었습니다 (매매 전략 미실행).")
-            return
         risk = load_json(RISK_STATE_FILE, {})
         today = now_kst().strftime("%Y-%m-%d")
         if risk.get("date") != today:
