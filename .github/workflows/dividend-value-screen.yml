@@ -57,6 +57,8 @@ jobs:
       - name: Promote existing verified PASS snapshot without re-screening
         if: inputs.promote_existing == true
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           rm -rf /tmp/dividend-signals-existing
@@ -64,6 +66,7 @@ jobs:
           python -m dividend_value.publish --promote-existing /tmp/dividend-signals-existing/signals.json
           rm -rf /tmp/dividend-signals-publish
           git clone -q --depth=1 --branch dividend-signals "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/dividend-signals-publish
+          git -C /tmp/dividend-signals-publish remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           cp signal-publish/signals.json /tmp/dividend-signals-publish/signals.json
           cd /tmp/dividend-signals-publish
           git config user.name kis-bot
@@ -134,6 +137,8 @@ jobs:
       - name: Publish complete or partial snapshot (no orders)
         if: inputs.promote_existing != true
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python -m dividend_value.publish
@@ -144,6 +149,7 @@ jobs:
               git -C /tmp/dividend-signals-publish checkout --orphan dividend-signals
               git -C /tmp/dividend-signals-publish remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
             }
+            git -C /tmp/dividend-signals-publish remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
             cp signal-publish/signals.json /tmp/dividend-signals-publish/signals.json
             cd /tmp/dividend-signals-publish
             git config user.name kis-bot
@@ -164,6 +170,8 @@ jobs:
       - name: Publish partial checkpoint separately
         if: inputs.promote_existing != true && hashFiles('signal-publish/partial-signals.json') != ''
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           rm -rf /tmp/dividend-partial-publish
@@ -172,6 +180,7 @@ jobs:
             git -C /tmp/dividend-partial-publish checkout --orphan dividend-partial-signals
             git -C /tmp/dividend-partial-publish remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
           }
+          git -C /tmp/dividend-partial-publish remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           cp signal-publish/partial-signals.json /tmp/dividend-partial-publish/partial-signals.json
           cd /tmp/dividend-partial-publish
           git config user.name kis-bot
