@@ -2,7 +2,7 @@
   "as_of": "2026-11-09",
   "scan_date": "2026-11-10",
   "source_sha": "7db8c0639262cc5f83b32ff0ddac8a79c1f13c70",
-  "source_run_id": "42746704303",
+  "source_run_id": "44680677006",
   "partial": true,
   "one_off_partial": true,
   "universe_verified": true,
@@ -26263,5 +26263,11 @@
     "389500": [
       "capital_not_impaired"
     ]
-  }
+  },
+  "promotion_date": "2026-11-20",
+  "promotion_source_sha": "447d60ea2319c63f972ad3b444e7376c244bf669",
+  "recovery_allowed_date": "2026-11-20",
+  "recovery_source_scan_date": "2026-11-10",
+  "publication_status": "PARTIAL_CHECKPOINT",
+  "published_at": "2026-11-20T14:23:27.281037+09:00"
 }
