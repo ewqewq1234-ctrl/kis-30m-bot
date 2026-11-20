@@ -31,7 +31,7 @@ class TradingTests(unittest.TestCase):
         return t.rebuild(self.bot)
 
     def snapshot(self, **updates):
-        data={'as_of':'2026-11-02','scan_date':'2026-11-03','source_sha':'sha','partial':False,
+        data={'as_of':'2026-11-02','scan_date':'2026-11-02','source_sha':'sha','partial':False,
             'candidates':[{'code':'000002','status':'PASS','corp_code':'other','industry':'20',
                 'avg_turnover_20d':100000000,'metrics':{'buy_ceiling':110,'tax_quantity':{'additional_qty':5}}}]}
         data.update(updates);self.files['/fake/dividend_signals.json']=data
@@ -110,7 +110,7 @@ class TradingTests(unittest.TestCase):
         self.bot.execute_order.assert_not_called()
 
     def test_stale_partial_or_foreign_code_snapshot_blocks_buy(self):
-        for update in ({'as_of':'2026-10-30'},{'partial':True},{'source_sha':'old'},{'scan_date':'2026-11-02'}):
+        for update in ({'as_of':'2026-10-30'},{'partial':True},{'source_sha':'old'}):
             self.snapshot(**update)
             with patch.dict('os.environ',GITHUB_SHA='sha'):
                 t.entries(self.bot,'token',{},100000,100000)
@@ -132,9 +132,9 @@ class TradingTests(unittest.TestCase):
 
     def test_premarket_defers_without_resetting_cycle_then_market_open_resumes(self):
         self.bot.now_kst=lambda:datetime(2026,11,4,6,18)
-        self.snapshot(scan_date='2026-11-03')
+        self.snapshot(as_of='2026-11-02',scan_date='2026-11-02')
         cycle={'positions':{},'buy_week':'2026-45','buy_batch_status':'IN_PROGRESS',
-            'buy_batch_scan_date':'2026-11-03','buy_batch_source_sha':'sha',
+            'buy_batch_scan_date':'2026-11-02','buy_batch_source_sha':'sha',
             'buy_permits':{},'buy_attempts':{},'last_exits':{}}
         self.files['/fake/dividend_state.json']=copy.deepcopy(cycle)
         with patch.dict('os.environ',GITHUB_SHA='sha'):
@@ -146,6 +146,28 @@ class TradingTests(unittest.TestCase):
             t.entries(self.bot,'token',{},100000,100000)
         self.bot.execute_order.assert_called_once()
         self.assertEqual(self.bot.execute_order.call_args.args[1],'000002')
+
+    def test_friday_recovery_promotion_continues_existing_partial_cycle(self):
+        self.bot.now_kst=lambda:datetime(2026,11,20,14,12)
+        self.bot.previous_exchange_session=lambda *a:date(2026,11,9)
+        self.snapshot(as_of='2026-11-09',scan_date='2026-11-10',partial=True,
+                      one_off_partial=True,universe_verified=True,unprocessed=0,query_failed=12,
+                      promotion_date='2026-11-20',recovery_allowed_date='2026-11-20',
+                      recovery_source_scan_date='2026-11-10',
+                      publication_status='PARTIAL_CHECKPOINT')
+        candidate=self.files['/fake/dividend_signals.json']['candidates'][0]
+        candidate.update(query_complete=True,listing_date='2020-01-01',
+                         listing_date_verified=True,risk_verified=True,
+                         risk_flagged=False,exclusion=None)
+        self.files['/fake/dividend_state.json']={
+            'positions':{},'buy_week':'2026-46','buy_batch_status':'IN_PROGRESS',
+            'buy_batch_scan_date':'2026-11-10','buy_batch_source_sha':'sha',
+            'one_off_partial_consumed':'2026-11-10',
+            'buy_permits':{},'buy_attempts':{},'last_exits':{}}
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.bot.execute_order.assert_called_once()
+        self.assertEqual(self.files['/fake/dividend_state.json']['buy_batch_status'],'IN_PROGRESS')
 
     def test_stale_and_corrupted_snapshots_have_exact_rejections(self):
         self.bot.now_kst=lambda:datetime(2026,11,20,10,12)

@@ -1,4 +1,4 @@
-"""Tuesday entries and sampled trailing exits, using the bot's durable journal.
+"""Tuesday-Friday entries and sampled trailing exits, using the bot's durable journal.
 
 No broker transport here: all orders go through execute_order/reconciliation.
 """
@@ -47,7 +47,12 @@ def valid_snapshot(snapshot, today, max_age_days=7):
         age = (today - scan_day).days
     except (TypeError, ValueError):
         return False, 'Invalid snapshot date'
-    if age < 0 or age > max_age_days:
+    recovery_allowed = (
+        snapshot.get('recovery_allowed_date') == today.isoformat()
+        and snapshot.get('recovery_source_scan_date') == snapshot.get('scan_date')
+        and snapshot.get('one_off_partial') is True
+    )
+    if age < 0 or (age > max_age_days and not recovery_allowed):
         return False, f'Snapshot stale or future-dated ({age} days)'
     if snapshot.get('partial') is True:
         if snapshot.get('publication_status') not in ('PARTIAL_CHECKPOINT', None):
@@ -247,26 +252,48 @@ def entries(bot, token, holdings, deposit, nav):
     except (TypeError, ValueError):
         return
     expected = os.getenv('GITHUB_SHA')
-    cycle_tuesday = today - timedelta(days=now.weekday() - 1) if 1 <= now.weekday() <= 4 else None
+    cycle_monday = today - timedelta(days=now.weekday()) if 1 <= now.weekday() <= 4 else None
+    recovery = (
+        snapshot.get('recovery_allowed_date') == today.isoformat()
+        and snapshot.get('recovery_source_scan_date') == scan_date
+        and snapshot.get('one_off_partial') is True
+        and snapshot.get('universe_verified') is True
+    )
     regular = (
         (today == ONE_DAY_ENTRY_DATE and scan_day == today)
         or (
-            entry_day(now)
-            and scan_day.weekday() == 1
-            and 0 <= (today - scan_day).days <= 7
+            today.weekday() == 1
+            and cycle_monday is not None
+            and scan_day == cycle_monday
+            and 0 <= (today - scan_day).days <= 1
         )
     )
     continuation = (
-        cycle_tuesday is not None
-        and scan_day == cycle_tuesday
+        (
+            cycle_monday is not None
+            and scan_day == cycle_monday
+        )
         and state.get('buy_week') == week
         and state.get('buy_batch_status') == 'IN_PROGRESS'
         and state.get('buy_batch_scan_date') == scan_date
         and state.get('buy_batch_source_sha') == snapshot.get('source_sha')
     )
-    if not regular and not continuation:
-        return
+    partial_partial_continuation = (
+        is_one_off_partial_snapshot(snapshot, scan_day)
+        and state.get('buy_batch_status') == 'IN_PROGRESS'
+        and state.get('buy_batch_scan_date') == scan_date
+        and state.get('buy_batch_source_sha') == snapshot.get('source_sha')
+    )
+    continuation = continuation or partial_partial_continuation
+    recovery_continuation = (
+        recovery
+        and scan_day.isoformat() == state.get('buy_batch_scan_date')
+        and state.get('buy_batch_status') == 'IN_PROGRESS'
+        and state.get('buy_batch_source_sha') == snapshot.get('source_sha')
+    )
     partial_oneoff = is_one_off_partial_snapshot(snapshot, today)
+    if not regular and not continuation and not recovery_continuation and not partial_oneoff:
+        return
     # The Nov 10 partial scan was approved ONCE as a new weekly batch.
     # After the Tuesday batch starts, allow its exact immutable snapshot to
     # continue Wednesday-Friday, just like a normal complete Tuesday scan.
@@ -277,7 +304,7 @@ def entries(bot, token, holdings, deposit, nav):
         and is_one_off_partial_snapshot(snapshot, ONE_OFF_PARTIAL_DATE)
         and state.get('one_off_partial_consumed') == ONE_OFF_PARTIAL_DATE.isoformat()
     )
-    permitted_partial = partial_oneoff or partial_continuation
+    permitted_partial = partial_oneoff or partial_continuation or recovery_continuation
     if partial_oneoff and state.get('one_off_partial_consumed') == today.isoformat():
         return
     same_cycle = (
@@ -288,12 +315,15 @@ def entries(bot, token, holdings, deposit, nav):
     if regular and same_cycle and state.get('buy_batch_status') == 'COMPLETE':
         return
     prev = bot.previous_exchange_session(token, scan_day).isoformat()
-    source_matches = (snapshot.get('source_sha') == expected if regular and not same_cycle
-                      else snapshot.get('source_sha') == state.get('buy_batch_source_sha'))
+    source_matches = (
+        snapshot.get('source_sha') == expected
+        if (regular and not same_cycle) or partial_oneoff
+        else snapshot.get('source_sha') == state.get('buy_batch_source_sha')
+    )
     if (not snapshot or snapshot.get('as_of') != prev
             or (snapshot.get('partial') and not permitted_partial)
             or not snapshot.get('source_sha') or not source_matches):
-        print('>> DIVIDEND: waiting for the complete Tuesday cycle snapshot to validate')
+        print('>> DIVIDEND: waiting for the complete Monday cycle snapshot or approved Friday recovery snapshot')
         return
     rows = snapshot.get('candidates', [])
     if not isinstance(rows, list):

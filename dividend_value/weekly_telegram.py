@@ -173,8 +173,8 @@ def build_messages(metadata, screening_rows, history, position_state, quotes, *,
     if not isinstance(screening_rows, list):
         screening_rows = []
     report_date = now.date()
-    if report_date.weekday() != 1:
-        raise ReportError("화요일이 아닌 날에는 주간 보고서를 작성하지 않습니다.")
+    if report_date.weekday() != 0:
+        raise ReportError("월요일이 아닌 날에는 주간 보고서를 작성하지 않습니다.")
     positions = position_state.get("positions", {})
     if not isinstance(positions, dict):
         raise ReportError("보유상태 파일 형식이 유효하지 않습니다.")
@@ -213,9 +213,9 @@ def build_messages(metadata, screening_rows, history, position_state, quotes, *,
                  if not unavailable else
                  f"산정불가 (시세 미확인 {len(unavailable)}/{len(inventory)}종목; 확인분 평가금액 {krw(total_value)}, 확인분 손익 {money(total_value-priced_cost)})")
     header = (
-        f"📊 <b>배당·가치주 화요일 정산 리포트</b>\n"
+        f"📊 <b>배당·가치주 월요일 정산 리포트</b>\n"
         f"🕓 {report_date.isoformat()} {now:%H:%M} KST\n\n"
-        f"<b>① 화요일 스크리닝</b>\n{scan_info}\n\n"
+        f"<b>① 월요일 스크리닝</b>\n{scan_info}\n\n"
         f"<b>② 이번 주 확인 체결 (월~화 집계 시점)</b>\n"
         f"매수 {len(buy)}건 · {sum(t['qty'] for t in buy)}주 · {krw(sum(t['amount'] for t in buy))}\n"
         f"매도 {len(sell)}건 · {sum(t['qty'] for t in sell)}주 · {krw(sum(t['amount'] for t in sell))}\n"

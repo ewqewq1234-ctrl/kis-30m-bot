@@ -2,6 +2,7 @@
 from collections.abc import Mapping
 from collections import Counter
 from datetime import datetime
+import argparse
 import json
 import os
 from pathlib import Path
@@ -57,6 +58,7 @@ def build_snapshot(meta, rows, now, source_sha):
         'scan_date': now.date().isoformat(),
         'as_of': meta['as_of'],
         'source_sha': source_sha,
+        'source_run_id': os.environ.get('GITHUB_RUN_ID'),
         'partial': bool(meta['partial']),
         'universe_verified': meta['universe_verified'],
         'universe_total': meta['universe_total'],
@@ -76,7 +78,52 @@ def build_snapshot(meta, rows, now, source_sha):
     }
 
 
+def promote_existing_snapshot(input_path, now, source_sha, source_run_id=None):
+    """Promote an existing verified PASS snapshot for a one-day Friday recovery."""
+    snapshot = json.loads(Path(input_path).read_text(encoding='utf-8'))
+    candidates = snapshot.get('candidates')
+    if not isinstance(candidates, list) or not snapshot.get('one_off_partial') is True:
+        raise ValueError('existing snapshot is not a verified partial PASS snapshot')
+    if snapshot.get('universe_verified') is not True or snapshot.get('unprocessed') != 0:
+        raise ValueError('existing snapshot does not satisfy partial recovery integrity')
+    promoted = dict(snapshot)
+    promoted.update({
+        'promotion_date': now.date().isoformat(),
+        'promotion_source_sha': source_sha,
+        'recovery_allowed_date': now.date().isoformat(),
+        'recovery_source_scan_date': snapshot.get('scan_date'),
+        'source_run_id': source_run_id or os.environ.get('GITHUB_RUN_ID'),
+        'publication_status': 'PARTIAL_CHECKPOINT',
+        'published_at': now.isoformat(),
+        'candidates': [r for r in candidates if r.get('status') == 'PASS'],
+    })
+    return promoted
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--promote-existing', metavar='PATH',
+                        help='Promote an existing verified partial PASS snapshot without re-screening')
+    args = parser.parse_args()
+    now = datetime.now(ZoneInfo('Asia/Seoul'))
+    sha = os.environ.get('GITHUB_SHA')
+    if not sha:
+        print('Signal publication safely skipped: GITHUB_SHA is missing')
+        return 0
+    if args.promote_existing:
+        try:
+            snapshot = promote_existing_snapshot(args.promote_existing, now, sha, os.environ.get('GITHUB_RUN_ID'))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f'Signal publication safely skipped: invalid existing snapshot: {exc}')
+            return 1
+        output = Path('signal-publish/signals.json')
+        output.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(output, snapshot)
+        verified = json.loads(output.read_text(encoding='utf-8'))
+        if verified != snapshot:
+            raise RuntimeError('promoted snapshot verification failed')
+        print('Existing verified PASS snapshot promoted as one-day Friday recovery.')
+        return 0
     root = Path('results/dividend-value')
     meta = json.loads((root / 'run_metadata.json').read_text(encoding='utf-8'))
     rows = json.loads((root / 'screening_details.json').read_text(encoding='utf-8'))

@@ -536,6 +536,13 @@ class OneShareTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertNotIn("logical_cron", workflow)
 
+    def test_monday_screening_schedule_and_manual_promotion_mode(self):
+        workflow = Path(".github/workflows/dividend-value-screen.yml").read_text(encoding="utf-8")
+        self.assertIn("- cron: '0 19 * * 0'", workflow)
+        self.assertIn("- cron: '0 21 * * 0'", workflow)
+        self.assertIn("promote_existing", workflow)
+        self.assertIn("Promote existing verified PASS snapshot", workflow)
+
     def test_live_order_is_blocked_after_market_close(self):
         with patch.object(
             bot, "now_kst",

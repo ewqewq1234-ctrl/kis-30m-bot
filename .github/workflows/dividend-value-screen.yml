@@ -14,6 +14,10 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      promote_existing:
+        description: 'Promote the latest existing verified PASS snapshot without screening'
+        type: boolean
+        default: false
       max_symbols:
         description: '500 = resumable batch; 0 = full scan'
         default: '500'
@@ -23,8 +27,8 @@ on:
         default: '0'
         required: false
   schedule:
-    - cron: '0 19 * * 1'  # Monday 19:00 UTC = Tuesday 04:00 KST; early scan.
-    - cron: '0 21 * * 1'  # Monday 21:00 UTC = Tuesday 06:00 KST; final scan and publication.
+    - cron: '0 19 * * 0'  # Sunday 19:00 UTC = Monday 04:00 KST; early scan.
+    - cron: '0 21 * * 0'  # Sunday 21:00 UTC = Monday 06:00 KST; final scan and publication.
 
 permissions:
   actions: write
@@ -48,7 +52,31 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Offline automated-data screening rules and API boundary tests
+        if: inputs.promote_existing != true
         run: python ci/run_offline_tests.py test_dividend_value
+      - name: Promote existing verified PASS snapshot without re-screening
+        if: inputs.promote_existing == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/dividend-signals-existing
+          git clone -q --depth=1 --branch dividend-signals "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/dividend-signals-existing
+          python -m dividend_value.publish --promote-existing /tmp/dividend-signals-existing/signals.json
+          rm -rf /tmp/dividend-signals-publish
+          git clone -q --depth=1 --branch dividend-signals "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/dividend-signals-publish
+          cp signal-publish/signals.json /tmp/dividend-signals-publish/signals.json
+          cd /tmp/dividend-signals-publish
+          git config user.name kis-bot
+          git config user.email kis-bot@users.noreply.github.com
+          git add signals.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'Promote verified PASS snapshot for Friday recovery'
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin dividend-signals || { git rebase --abort || true; continue; }
+            if git push origin HEAD:refs/heads/dividend-signals; then exit 0; fi
+            sleep $((attempt * 10))
+          done
+          exit 1
       - uses: actions/cache/restore@v4
         with:
           path: .screen-cache
@@ -64,6 +92,7 @@ jobs:
             git show FETCH_HEAD:exclusion-registry.json > .screen-cache/exclusion-registry.json
           fi
       - name: Read official market data and disclosures (no account or order API)
+        if: inputs.promote_existing != true
         env:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
@@ -103,6 +132,7 @@ jobs:
           test -n "$EXTRAHEADER"
           git -c http.extraheader="$EXTRAHEADER" push --force origin HEAD:refs/heads/dividend-screen-state
       - name: Publish complete or partial snapshot (no orders)
+        if: inputs.promote_existing != true
         shell: bash
         run: |
           set -euo pipefail
@@ -132,7 +162,7 @@ jobs:
             echo "Publication safely skipped: scan is incomplete or not eligible."
           fi
       - name: Publish partial checkpoint separately
-        if: hashFiles('signal-publish/partial-signals.json') != ''
+        if: inputs.promote_existing != true && hashFiles('signal-publish/partial-signals.json') != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -156,7 +186,7 @@ jobs:
           done
           exit 1
       - name: Dispatch continuation batch
-        if: always()
+        if: always() && inputs.promote_existing != true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

@@ -1703,7 +1703,7 @@ def handle_daily_closing_report(token: str, holdings: dict, total_asset: int):
            f"• 선정 타깃: <b>{html.escape(target_label)}</b>\n"
            f"• 카나리아 점검: {html.escape(canary_summary)}\n"
            f"• 총 평가 자산: {total_asset:,.0f}원\n"
-           f"• 배분: 공격형 BAA {BAA_TARGET_RATIO:.0%} / 배당·가치 {DIVIDEND_VALUE_TARGET_RATIO:.0%} (화요일 신규매수 / 실행마다 매도 점검)\n"
+           f"• 배분: 공격형 BAA {BAA_TARGET_RATIO:.0%} / 배당·가치 {DIVIDEND_VALUE_TARGET_RATIO:.0%} (월요일 스크리닝·화~금 매수 / 실행마다 매도 점검)\n"
            f"• 현재 실행 시각: {now:%H:%M:%S} KST; 보고 전용 실행\n━━━━━━━━━━━━━━━━━━━━")
     send_telegram(msg, is_alert=recovered)
     if not FORCE_BAA:
@@ -1936,7 +1936,7 @@ def send_hourly_session_report():
     baa = load_json(BAA_STATE_FILE, {})
     title = "장중 잠정 보고" if phase == "provisional" else "장 마감 보고"
     message = (f"📋 <b>{title}</b> / {now:%Y-%m-%d %H:%M} KST\n"
-               f"BAA {BAA_TARGET_RATIO:.0%} / 배당·가치 {DIVIDEND_VALUE_TARGET_RATIO:.0%} (화요일 신규매수)\n"
+               f"BAA {BAA_TARGET_RATIO:.0%} / 배당·가치 {DIVIDEND_VALUE_TARGET_RATIO:.0%} (월요일 스크리닝·화~금 매수)\n"
                f"BAA 저장 종목: {html.escape(str(baa.get('target_code') or '없음'))} / "
                f"보유 {number(baa.get('owned_qty'))}주\n"
                "※ 저장 원장 기준. 현재 실계좌·종가·체결을 새로 검증한 보고가 아닙니다.")

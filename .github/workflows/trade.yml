@@ -95,7 +95,7 @@ jobs:
             git push origin HEAD:refs/heads/bot-state
           fi
 
-      - name: Fetch latest read-only Tuesday candidate snapshot
+      - name: Fetch latest read-only Monday candidate snapshot
         if: steps.runtime.outputs.active == 'true'
         shell: bash
         run: |
