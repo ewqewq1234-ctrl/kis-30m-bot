@@ -175,6 +175,14 @@ def guard_order(bot, code, qty, side, metadata):
             and 0 <= (now.date() - scan_day).days <= 3
             and 1 <= now.weekday() <= 4
         )
+        snapshot = bot.load_json(bot.BASE_DIR / 'dividend_signals.json', {})
+        recovery = (
+            snapshot.get('recovery_allowed_date') == now.date().isoformat()
+            and snapshot.get('recovery_source_scan_date') == scan_date
+            and snapshot.get('one_off_partial') is True
+            and snapshot.get('universe_verified') is True
+        )
+        cycle_day = cycle_day or recovery
         exact_batch = (
             state.get('buy_batch_status') == 'IN_PROGRESS'
             and state.get('buy_batch_scan_date') == scan_date
@@ -441,6 +449,12 @@ def entries(bot, token, holdings, deposit, nav):
             continue
         metadata = {'corp_code':corp,'industry':sector,'signal_as_of':prev,
                     'source_sha':snapshot['source_sha'],'signal_scan_date':scan_date}
+        if permitted_partial and recovery:
+            metadata.update({
+                'recovery_allowed_date': snapshot.get('recovery_allowed_date'),
+                'recovery_source_scan_date': snapshot.get('recovery_source_scan_date'),
+                'promotion_source_sha': snapshot.get('promotion_source_sha'),
+            })
         state['buy_permits'][code] = {'date':today.isoformat(),'qty':qty,'metadata':metadata}
         if not bot.DRY_RUN:
             # Persist the per-day attempt before POST. A same-day rerun will

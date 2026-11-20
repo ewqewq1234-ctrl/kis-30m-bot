@@ -168,6 +168,8 @@ class TradingTests(unittest.TestCase):
             t.entries(self.bot,'token',{},100000,100000)
         self.bot.execute_order.assert_called_once()
         self.assertEqual(self.files['/fake/dividend_state.json']['buy_batch_status'],'IN_PROGRESS')
+        permit=self.files['/fake/dividend_state.json']['buy_permits']['000002']
+        t.guard_order(self.bot,'000002',permit['qty'],'02',permit['metadata'])
 
     def test_stale_and_corrupted_snapshots_have_exact_rejections(self):
         self.bot.now_kst=lambda:datetime(2026,11,20,10,12)
