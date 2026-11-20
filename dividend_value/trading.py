@@ -4,13 +4,13 @@ No broker transport here: all orders go through execute_order/reconciliation.
 """
 from datetime import date, timedelta
 import math
-import os
 
 from .rules import DEFAULT_CONFIG
 
 STRATEGY = 'DIVIDEND'
 ONE_DAY_ENTRY_DATE = date(2026, 11, 2)
 ONE_OFF_PARTIAL_DATE = date(2026, 11, 10)
+MAX_SNAPSHOT_AGE_DAYS = 14
 
 
 def is_one_off_partial_snapshot(snapshot, today):
@@ -26,6 +26,57 @@ def is_one_off_partial_snapshot(snapshot, today):
             and not snapshot.get('blocker'))
 
 
+def is_one_off_partial_continuation(snapshot, today):
+    try:
+        scan_day = date.fromisoformat(snapshot.get('scan_date'))
+    except (TypeError, ValueError):
+        return False
+    return (
+        snapshot.get('one_off_partial') is True
+        and scan_day == ONE_OFF_PARTIAL_DATE
+        and scan_day < today <= scan_day + timedelta(days=3)
+        and snapshot.get('partial') is True
+        and snapshot.get('universe_verified') is True
+        and snapshot.get('unprocessed') == 0
+        and isinstance(snapshot.get('query_failed'), int)
+        and snapshot.get('query_failed') > 0
+        and not snapshot.get('blocker')
+    )
+
+
+def is_promoted_recovery_snapshot(snapshot, today):
+    published_at = snapshot.get('published_at')
+    return (
+        today == date(2026, 11, 20)
+        and snapshot.get('recovery_allowed_date') == today.isoformat()
+        and snapshot.get('promotion_date') == today.isoformat()
+        and snapshot.get('recovery_source_scan_date') == snapshot.get('scan_date')
+        and snapshot.get('one_off_partial') is True
+        and snapshot.get('publication_status') == 'PARTIAL_CHECKPOINT'
+        and snapshot.get('partial') is True
+        and snapshot.get('universe_verified') is True
+        and snapshot.get('unprocessed') == 0
+        and isinstance(snapshot.get('query_failed'), int)
+        and snapshot.get('query_failed') > 0
+        and isinstance(published_at, str)
+        and published_at[:10] == today.isoformat()
+    )
+
+
+def snapshot_identity(snapshot):
+    """Identify one immutable signal publication, not just its screening date."""
+    return '|'.join(str(snapshot.get(key) or '') for key in
+                    ('scan_date', 'source_sha', 'source_run_id', 'published_at'))
+
+
+def state_matches_snapshot(state, snapshot):
+    identity = state.get('buy_batch_snapshot_id')
+    if identity:
+        return identity == snapshot_identity(snapshot)
+    return (state.get('buy_batch_scan_date') == snapshot.get('scan_date')
+            and state.get('buy_batch_source_sha') == snapshot.get('source_sha'))
+
+
 def _months_ago(iso_date, months):
     import calendar
     as_of = date.fromisoformat(iso_date)
@@ -39,7 +90,7 @@ def entry_day(now):
     return now.weekday() == 1 or now.date() == ONE_DAY_ENTRY_DATE
 
 
-def valid_snapshot(snapshot, today, max_age_days=7):
+def valid_snapshot(snapshot, today, max_age_days=MAX_SNAPSHOT_AGE_DAYS):
     if not isinstance(snapshot, dict):
         return False, 'No valid snapshot'
     try:
@@ -47,20 +98,13 @@ def valid_snapshot(snapshot, today, max_age_days=7):
         age = (today - scan_day).days
     except (TypeError, ValueError):
         return False, 'Invalid snapshot date'
-    recovery_allowed = (
-        snapshot.get('recovery_allowed_date') == today.isoformat()
-        and snapshot.get('recovery_source_scan_date') == snapshot.get('scan_date')
-        and snapshot.get('one_off_partial') is True
-    )
+    recovery_allowed = is_promoted_recovery_snapshot(snapshot, today)
     if age < 0 or (age > max_age_days and not recovery_allowed):
         return False, f'Snapshot stale or future-dated ({age} days)'
     if snapshot.get('partial') is True:
-        if snapshot.get('publication_status') not in ('PARTIAL_CHECKPOINT', None):
-            return False, 'Partial snapshot publication status is invalid'
-        if snapshot.get('publication_status') is None and snapshot.get('one_off_partial') is not True:
-            return False, 'Arbitrary partial snapshot is not allowed'
-        if snapshot.get('universe_verified') is not True:
-            return False, 'Partial snapshot universe is unverified'
+        if not (recovery_allowed or is_one_off_partial_snapshot(snapshot, today)
+                or is_one_off_partial_continuation(snapshot, today)):
+            return False, 'Partial snapshot is not within an approved recovery window'
     elif snapshot.get('partial') is not False:
         return False, 'Snapshot completeness is invalid'
     if not snapshot.get('source_sha'):
@@ -169,30 +213,37 @@ def guard_order(bot, code, qty, side, metadata):
             scan_day = date.fromisoformat(scan_date)
         except (TypeError, ValueError):
             bot.fail('DIVIDEND buy signal date is invalid')
-        legacy = now.date() == ONE_DAY_ENTRY_DATE and scan_day == ONE_DAY_ENTRY_DATE
-        cycle_day = (
-            scan_day.weekday() == 1
-            and 0 <= (now.date() - scan_day).days <= 3
-            and 1 <= now.weekday() <= 4
-        )
         snapshot = bot.load_json(bot.BASE_DIR / 'dividend_signals.json', {})
-        recovery = (
-            snapshot.get('recovery_allowed_date') == now.date().isoformat()
-            and snapshot.get('recovery_source_scan_date') == scan_date
-            and snapshot.get('one_off_partial') is True
-            and snapshot.get('universe_verified') is True
+        legacy = now.date() == ONE_DAY_ENTRY_DATE and scan_day == ONE_DAY_ENTRY_DATE
+        recovery = is_promoted_recovery_snapshot(snapshot, now.date())
+        partial_continuation = (
+            is_one_off_partial_continuation(snapshot, now.date())
+            and state.get('one_off_partial_consumed') == ONE_OFF_PARTIAL_DATE.isoformat()
+            and scan_day == ONE_OFF_PARTIAL_DATE
         )
-        cycle_day = cycle_day or recovery
+        cycle_day = (
+            1 <= now.weekday() <= 4
+            and scan_day.weekday() == 0
+            and 0 <= (now.date() - scan_day).days <= MAX_SNAPSHOT_AGE_DAYS
+        ) or recovery or partial_continuation
         exact_batch = (
             state.get('buy_batch_status') == 'IN_PROGRESS'
-            and state.get('buy_batch_scan_date') == scan_date
-            and state.get('buy_batch_source_sha') == metadata.get('source_sha')
+            and state_matches_snapshot(state, snapshot)
+        )
+        snapshot_metadata_matches = (
+            legacy or (
+                isinstance(metadata, dict)
+                and metadata.get('snapshot_id') == snapshot_identity(snapshot)
+                and metadata.get('source_sha') == snapshot.get('source_sha')
+                and metadata.get('signal_scan_date') == scan_date
+            )
         )
         if (not (legacy or (cycle_day and exact_batch))
                 or not ('09:10:00' <= now_hms <= '15:00:00')
                 or (legacy and qty != 1)
                 or permit.get('date') != now.date().isoformat()
-                or qty != permit.get('qty') or metadata != permit.get('metadata')):
+                or qty != permit.get('qty') or metadata != permit.get('metadata')
+                or not snapshot_metadata_matches):
             bot.fail('DIVIDEND buy lacks valid dated permit or is outside Tue-Fri 09:10-15:00 cycle')
 
 
@@ -259,48 +310,35 @@ def entries(bot, token, holdings, deposit, nav):
         scan_day = date.fromisoformat(scan_date)
     except (TypeError, ValueError):
         return
-    expected = os.getenv('GITHUB_SHA')
-    cycle_monday = today - timedelta(days=now.weekday()) if 1 <= now.weekday() <= 4 else None
-    recovery = (
-        snapshot.get('recovery_allowed_date') == today.isoformat()
-        and snapshot.get('recovery_source_scan_date') == scan_date
-        and snapshot.get('one_off_partial') is True
-        and snapshot.get('universe_verified') is True
-    )
+    recovery = is_promoted_recovery_snapshot(snapshot, today)
     regular = (
         (today == ONE_DAY_ENTRY_DATE and scan_day == today)
         or (
-            today.weekday() == 1
-            and cycle_monday is not None
-            and scan_day == cycle_monday
-            and 0 <= (today - scan_day).days <= 1
+            1 <= now.weekday() <= 4
+            and scan_day.weekday() == 0
+            and 0 <= (today - scan_day).days <= MAX_SNAPSHOT_AGE_DAYS
         )
     )
+    same_snapshot = state_matches_snapshot(state, snapshot)
     continuation = (
-        (
-            cycle_monday is not None
-            and scan_day == cycle_monday
-        )
+        regular
         and state.get('buy_week') == week
         and state.get('buy_batch_status') == 'IN_PROGRESS'
-        and state.get('buy_batch_scan_date') == scan_date
-        and state.get('buy_batch_source_sha') == snapshot.get('source_sha')
+        and same_snapshot
     )
     partial_partial_continuation = (
         is_one_off_partial_snapshot(snapshot, scan_day)
         and state.get('buy_batch_status') == 'IN_PROGRESS'
-        and state.get('buy_batch_scan_date') == scan_date
-        and state.get('buy_batch_source_sha') == snapshot.get('source_sha')
+        and same_snapshot
     )
     continuation = continuation or partial_partial_continuation
     recovery_continuation = (
         recovery
-        and scan_day.isoformat() == state.get('buy_batch_scan_date')
         and state.get('buy_batch_status') == 'IN_PROGRESS'
-        and state.get('buy_batch_source_sha') == snapshot.get('source_sha')
+        and same_snapshot
     )
     partial_oneoff = is_one_off_partial_snapshot(snapshot, today)
-    if not regular and not continuation and not recovery_continuation and not partial_oneoff:
+    if not regular and not continuation and not recovery and not recovery_continuation and not partial_oneoff:
         return
     # The Nov 10 partial scan was approved ONCE as a new weekly batch.
     # After the Tuesday batch starts, allow its exact immutable snapshot to
@@ -313,44 +351,50 @@ def entries(bot, token, holdings, deposit, nav):
         and state.get('one_off_partial_consumed') == ONE_OFF_PARTIAL_DATE.isoformat()
     )
     permitted_partial = partial_oneoff or partial_continuation or recovery_continuation
+    if recovery and not recovery_continuation:
+        permitted_partial = True
     if partial_oneoff and state.get('one_off_partial_consumed') == today.isoformat():
         return
     same_cycle = (
         state.get('buy_week') == week
-        and state.get('buy_batch_scan_date') == scan_date
-        and state.get('buy_batch_source_sha') == snapshot.get('source_sha')
+        and same_snapshot
     )
     if regular and same_cycle and state.get('buy_batch_status') == 'COMPLETE':
         return
     prev = bot.previous_exchange_session(token, scan_day).isoformat()
     source_matches = (
-        snapshot.get('source_sha') == expected
-        if (regular and not same_cycle) or partial_oneoff
-        else snapshot.get('source_sha') == state.get('buy_batch_source_sha')
+        snapshot.get('source_sha') == state.get('buy_batch_source_sha')
+        if continuation or recovery_continuation or partial_continuation
+        else bool(snapshot.get('source_sha'))
     )
     if (not snapshot or snapshot.get('as_of') != prev
             or (snapshot.get('partial') and not permitted_partial)
             or not snapshot.get('source_sha') or not source_matches):
-        print('>> DIVIDEND: waiting for the complete Monday cycle snapshot or approved Friday recovery snapshot')
+        print('>> DIVIDEND: waiting for a fresh Monday snapshot or an approved recovery snapshot')
         return
     rows = snapshot.get('candidates', [])
     if not isinstance(rows, list):
         bot.fail('DIVIDEND malformed candidate snapshot')
+    if any(not isinstance(row, dict) or not isinstance(row.get('code'), str) for row in rows):
+        bot.fail('DIVIDEND malformed candidate row')
     if not any(isinstance(row, dict) and row.get('status') == 'PASS' for row in rows):
         return
     # Only a single invocation can consume this incomplete, strictly scoped snapshot.
     if partial_oneoff and not bot.DRY_RUN:
         state['one_off_partial_consumed'] = today.isoformat()
         bot.save_json(path(bot), state)
-    # Start one durable cycle on Tuesday. Wednesday-Friday reuse this exact
-    # snapshot and re-evaluate only symbols not already filled or pending.
-    if regular and not same_cycle and not bot.DRY_RUN:
+    # Bind each Tue-Fri purchasing cycle to the exact published snapshot.
+    if ((regular and not same_cycle) or (recovery and not recovery_continuation)) and not bot.DRY_RUN:
         state.update(buy_week=week, buy_batch_status='IN_PROGRESS',
                      buy_batch_scan_date=scan_date,
                      buy_batch_source_sha=snapshot['source_sha'],
+                     buy_batch_snapshot_id=snapshot_identity(snapshot),
                      buy_permits={}, buy_attempts={})
         if not one_day_test:
             bot.save_json(path(bot), state)
+    elif (continuation or recovery_continuation or partial_continuation) and not bot.DRY_RUN:
+        state['buy_batch_snapshot_id'] = snapshot_identity(snapshot)
+        bot.save_json(path(bot), state)
     state.setdefault('buy_permits', {})
     state.setdefault('buy_attempts', {})
     if (one_day_test
@@ -448,7 +492,8 @@ def entries(bot, token, holdings, deposit, nav):
             print(f'>> DIVIDEND {code}: 주문 가능 수량 0주 (현금·업종·전략 한도 또는 배당세 제한), 화~금 재평가')
             continue
         metadata = {'corp_code':corp,'industry':sector,'signal_as_of':prev,
-                    'source_sha':snapshot['source_sha'],'signal_scan_date':scan_date}
+                    'source_sha':snapshot['source_sha'],'signal_scan_date':scan_date,
+                    'snapshot_id':snapshot_identity(snapshot)}
         if permitted_partial and recovery:
             metadata.update({
                 'recovery_allowed_date': snapshot.get('recovery_allowed_date'),

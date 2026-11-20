@@ -102,15 +102,17 @@ class TradingTests(unittest.TestCase):
         self.assertNotIn('buy_week',self.files.get('/fake/dividend_state.json',{}))
         self.bot.execute_order.assert_not_called()
 
-    def test_november_3_still_needs_tuesday_snapshot(self):
+    def test_tuesday_accepts_monday_screening_snapshot(self):
         self.bot.now_kst=lambda:datetime(2026,11,3,11,12)
+        self.bot.previous_exchange_session=lambda *a:date(2026,10,30)
         self.snapshot(as_of='2026-10-30',scan_date='2026-11-02')
-        with patch.dict('os.environ',GITHUB_SHA='sha'):
+        with patch.dict('os.environ',GITHUB_SHA='different-trading-commit'):
             t.entries(self.bot,'token',{},100000,100000)
-        self.bot.execute_order.assert_not_called()
+        self.bot.execute_order.assert_called_once()
+        self.assertIn('buy_batch_snapshot_id',self.files['/fake/dividend_state.json'])
 
     def test_stale_partial_or_foreign_code_snapshot_blocks_buy(self):
-        for update in ({'as_of':'2026-10-30'},{'partial':True},{'source_sha':'old'}):
+        for update in ({'as_of':'2026-10-30'},{'partial':True},{'source_sha':''}):
             self.snapshot(**update)
             with patch.dict('os.environ',GITHUB_SHA='sha'):
                 t.entries(self.bot,'token',{},100000,100000)
@@ -154,6 +156,7 @@ class TradingTests(unittest.TestCase):
                       one_off_partial=True,universe_verified=True,unprocessed=0,query_failed=12,
                       promotion_date='2026-11-20',recovery_allowed_date='2026-11-20',
                       recovery_source_scan_date='2026-11-10',
+                      published_at='2026-11-20T14:23:27+09:00',
                       publication_status='PARTIAL_CHECKPOINT')
         candidate=self.files['/fake/dividend_signals.json']['candidates'][0]
         candidate.update(query_complete=True,listing_date='2020-01-01',
@@ -170,6 +173,68 @@ class TradingTests(unittest.TestCase):
         self.assertEqual(self.files['/fake/dividend_state.json']['buy_batch_status'],'IN_PROGRESS')
         permit=self.files['/fake/dividend_state.json']['buy_permits']['000002']
         t.guard_order(self.bot,'000002',permit['qty'],'02',permit['metadata'])
+
+    def test_promoted_partial_recovery_expires_after_publication_day(self):
+        self.snapshot(as_of='2026-11-09',scan_date='2026-11-10',partial=True,
+                      one_off_partial=True,universe_verified=True,unprocessed=0,
+                      query_failed=12,promotion_date='2026-11-20',
+                      recovery_allowed_date='2026-11-20',
+                      recovery_source_scan_date='2026-11-10',
+                      published_at='2026-11-20T14:23:27+09:00',
+                      publication_status='PARTIAL_CHECKPOINT')
+        snapshot=self.files['/fake/dividend_signals.json']
+        self.assertEqual(t.valid_snapshot(snapshot,date(2026,11,20)),(True,None))
+        valid,reason=t.valid_snapshot(snapshot,date(2026,11,21))
+        self.assertFalse(valid)
+        self.assertEqual(reason,'Partial snapshot is not within an approved recovery window')
+
+    def test_delayed_monday_snapshot_is_bound_to_publication_across_tue_to_fri(self):
+        self.bot.now_kst=lambda:datetime(2026,11,17,10,12)
+        self.bot.previous_exchange_session=lambda *a:date(2026,11,6)
+        self.snapshot(as_of='2026-11-06',scan_date='2026-11-09',
+                      source_run_id='screen-run-42',
+                      published_at='2026-11-09T06:00:00+09:00')
+        with patch.dict('os.environ',GITHUB_SHA='different-trading-commit'):
+            t.entries(self.bot,'token',{},100000,100000)
+        state=self.files['/fake/dividend_state.json']
+        identity=state['buy_batch_snapshot_id']
+        self.assertEqual(identity,t.snapshot_identity(self.files['/fake/dividend_signals.json']))
+        self.bot.now_kst=lambda:datetime(2026,11,18,10,12)
+        with patch.dict('os.environ',GITHUB_SHA='different-trading-commit'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.assertEqual(self.bot.execute_order.call_count,2)
+        self.assertEqual(self.files['/fake/dividend_state.json']['buy_batch_snapshot_id'],identity)
+
+    def test_snapshot_freshness_allows_fourteen_days_but_not_fifteen(self):
+        self.snapshot(scan_date='2026-11-09')
+        self.assertEqual(t.valid_snapshot(self.files['/fake/dividend_signals.json'],
+                                          date(2026,11,23)),(True,None))
+        self.assertFalse(t.valid_snapshot(self.files['/fake/dividend_signals.json'],
+                                          date(2026,11,24))[0])
+
+    def test_partial_checkpoint_only_buys_individually_verified_pass_rows(self):
+        self.bot.now_kst=lambda:datetime(2026,11,20,14,12)
+        self.bot.previous_exchange_session=lambda *a:date(2026,11,9)
+        self.snapshot(as_of='2026-11-09',scan_date='2026-11-10',partial=True,
+                      one_off_partial=True,universe_verified=True,unprocessed=0,
+                      query_failed=12,promotion_date='2026-11-20',
+                      recovery_allowed_date='2026-11-20',
+                      recovery_source_scan_date='2026-11-10',
+                      published_at='2026-11-20T14:23:27+09:00',
+                      publication_status='PARTIAL_CHECKPOINT')
+        candidate=self.files['/fake/dividend_signals.json']['candidates'][0]
+        candidate.update(query_complete=True,listing_date='2020-01-01',
+                         listing_date_verified=True,risk_verified=True,
+                         risk_flagged=False,exclusion=None)
+        for status in ('REVIEW','FAIL','EXCLUDED'):
+            self.files['/fake/dividend_signals.json']['candidates'].append(
+                dict(candidate,code='00000'+str(len(status)),status=status))
+        self.files['/fake/dividend_signals.json']['candidates'].append(
+            dict(candidate,code='000099',query_complete=False))
+        with patch.dict('os.environ',GITHUB_SHA='sha'):
+            t.entries(self.bot,'token',{},100000,100000)
+        self.assertEqual(self.bot.execute_order.call_count,1)
+        self.assertEqual(self.bot.execute_order.call_args.args[1],'000002')
 
     def test_stale_and_corrupted_snapshots_have_exact_rejections(self):
         self.bot.now_kst=lambda:datetime(2026,11,20,10,12)
