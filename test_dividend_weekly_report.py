@@ -1,4 +1,4 @@
-"""No-network regression tests for dividend/value Tuesday Telegram reporting."""
+"""No-network regression tests for dividend/value Monday Telegram reporting."""
 from datetime import datetime
 import json
 import os
@@ -10,19 +10,19 @@ from dividend_value import weekly_telegram as w
 
 class WeeklyTelegramTests(unittest.TestCase):
     def setUp(self):
-        self.now = datetime(2026, 11, 10, 16, 40, tzinfo=w.KST)
+        self.now = datetime(2026, 11, 9, 16, 40, tzinfo=w.KST)
         self.buy = {"id": "buy-1", "strategy": "DIVIDEND", "code": "000001",
-                    "side": "BUY", "created_at": "2026-11-10 14:43:00",
+                    "side": "BUY",                     "created_at": "2026-11-09 14:43:00",
                     "status": "FILLED", "confirmed_fill_qty": 5,
                     "confirmed_fill_amt": 50000}
         self.sale = {"id": "sale-1", "strategy": "DIVIDEND", "code": "000001",
-                     "side": "SELL", "created_at": "2026-11-10 15:00:00",
+                     "side": "SELL",                      "created_at": "2026-11-09 15:00:00",
                      "status": "FILLED", "confirmed_fill_qty": 2,
                      "confirmed_fill_amt": 22000, "sell_cost_basis": 10000}
         self.history = {"orders": [self.buy, self.sale]}
         self.state = {"positions": {"000001": {"qty": 3, "avg_price": 10000}}}
-        self.metadata = {"executed_kst": "2026-11-10T12:02:00+09:00",
-                         "as_of": "2026-11-09", "universe_total": 4408,
+        self.metadata = {"executed_kst": "2026-11-09T12:02:00+09:00",
+                         "as_of": "2026-11-06", "universe_total": 4408,
                          "counts": {"PASS": 23, "REVIEW": 41, "FAIL": 2448,
                                     "EXCLUDED": 1896},
                          "query_failed": 12, "unprocessed": 0, "partial": True}

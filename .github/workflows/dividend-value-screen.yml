@@ -14,15 +14,24 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      promote_existing:
+        description: 'Promote the latest existing verified PASS snapshot without screening'
+        type: boolean
+        default: false
       max_symbols:
-        description: '800 = resumable batch; 0 = full scan'
-        default: '800'
+        description: '500 = resumable batch; 0 = full scan'
+        default: '500'
         required: true
+      chain_count:
+        description: 'Maximum 6 chained scan batches'
+        default: '0'
+        required: false
   schedule:
-    - cron: '0 19 * * 1'  # Monday 19:00 UTC = Tuesday 04:00 KST; early scan.
-    - cron: '0 21 * * 1'  # Monday 21:00 UTC = Tuesday 06:00 KST; final scan and publication.
+    - cron: '0 19 * * 0'  # Sunday 19:00 UTC = Monday 04:00 KST; early scan.
+    - cron: '0 21 * * 0'  # Sunday 21:00 UTC = Monday 06:00 KST; final scan and publication.
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -43,12 +52,39 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Offline automated-data screening rules and API boundary tests
+        if: inputs.promote_existing != true
         run: python ci/run_offline_tests.py test_dividend_value
+      - name: Promote existing verified PASS snapshot without re-screening
+        if: inputs.promote_existing == true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/dividend-signals-existing
+          git clone -q --depth=1 --branch dividend-signals "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/dividend-signals-existing
+          python -m dividend_value.publish --promote-existing /tmp/dividend-signals-existing/signals.json
+          rm -rf /tmp/dividend-signals-publish
+          git clone -q --depth=1 --branch dividend-signals "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/dividend-signals-publish
+          git -C /tmp/dividend-signals-publish remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          cp signal-publish/signals.json /tmp/dividend-signals-publish/signals.json
+          cd /tmp/dividend-signals-publish
+          git config user.name kis-bot
+          git config user.email kis-bot@users.noreply.github.com
+          git add signals.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'Promote verified PASS snapshot for Friday recovery'
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin dividend-signals || { git rebase --abort || true; continue; }
+            if git push origin HEAD:refs/heads/dividend-signals; then exit 0; fi
+            sleep $((attempt * 10))
+          done
+          exit 1
       - uses: actions/cache/restore@v4
         with:
           path: .screen-cache
-          key: dividend-value-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: dividend-value-v1-
+          key: dividend-value-v2-${{ github.repository }}-${{ github.sha }}
+          restore-keys: dividend-value-v2-
       - name: Restore persistent exclusion registry
         shell: bash
         run: |
@@ -59,15 +95,27 @@ jobs:
             git show FETCH_HEAD:exclusion-registry.json > .screen-cache/exclusion-registry.json
           fi
       - name: Read official market data and disclosures (no account or order API)
+        if: inputs.promote_existing != true
         env:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
-          # Scheduled scans use the full universe; manual runs default to
-          # resumable 800-symbol batches. Workflow edits never start a scan.
-          MAX_SYMBOLS: ${{ inputs.max_symbols || '0' }}
+          # Manual and scheduled scans both resume in bounded batches.
+          MAX_SYMBOLS: ${{ github.event_name == 'schedule' && '0' || inputs.max_symbols || '500' }}
           PYTHONUNBUFFERED: '1'
-        run: python -m dividend_value.screen --max-symbols "$MAX_SYMBOLS"
+        shell: bash
+        run: |
+          set -uo pipefail
+          attempt=1
+          while [ "$attempt" -le 3 ]; do
+            if python -m dividend_value.screen --max-symbols "$MAX_SYMBOLS"; then
+              exit 0
+            fi
+            echo "Screen attempt $attempt failed; retrying the persisted checkpoint"
+            attempt=$((attempt + 1))
+            sleep $((attempt * 30))
+          done
+          exit 1
       - name: Persist exclusion registry (no screening results or credentials)
         if: always() && hashFiles('.screen-cache/exclusion-registry.json') != ''
         shell: bash
@@ -86,24 +134,79 @@ jobs:
           EXTRAHEADER="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)"
           test -n "$EXTRAHEADER"
           git -c http.extraheader="$EXTRAHEADER" push --force origin HEAD:refs/heads/dividend-screen-state
-      - name: Publish complete Tuesday snapshot (no orders)
-        if: github.event_name == 'schedule' && github.event.schedule == '0 21 * * 1'
+      - name: Publish complete or partial snapshot (no orders)
+        if: inputs.promote_existing != true
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python -m dividend_value.publish
           if [ -f signal-publish/signals.json ]; then
-            cd signal-publish
-            git init -q
-            git checkout --orphan dividend-signals
-            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+            rm -rf /tmp/dividend-signals-publish
+            git clone -q --depth=1 --branch dividend-signals "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/dividend-signals-publish || {
+              git init -q /tmp/dividend-signals-publish
+              git -C /tmp/dividend-signals-publish checkout --orphan dividend-signals
+              git -C /tmp/dividend-signals-publish remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+            }
+            git -C /tmp/dividend-signals-publish remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            cp signal-publish/signals.json /tmp/dividend-signals-publish/signals.json
+            cd /tmp/dividend-signals-publish
+            git config user.name kis-bot
+            git config user.email kis-bot@users.noreply.github.com
             git add signals.json
-            git -c user.name=kis-bot -c user.email=kis-bot@users.noreply.github.com commit -m 'Tuesday verified dividend candidates'
-            EXTRAHEADER="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)"
-            test -n "$EXTRAHEADER"
-            git -c http.extraheader="$EXTRAHEADER" push --force origin HEAD:refs/heads/dividend-signals
+            git diff --cached --quiet && exit 0
+            git commit -m 'Verified dividend candidates'
+            for attempt in 1 2 3 4 5; do
+              git pull --rebase origin dividend-signals || { git rebase --abort || true; continue; }
+              if git push origin HEAD:refs/heads/dividend-signals; then exit 0; fi
+              sleep $((attempt * 10))
+            done
+            echo "Complete snapshot publication failed; preserving the last complete snapshot"
+            exit 1
           else
             echo "Publication safely skipped: scan is incomplete or not eligible."
+          fi
+      - name: Publish partial checkpoint separately
+        if: inputs.promote_existing != true && hashFiles('signal-publish/partial-signals.json') != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/dividend-partial-publish
+          git clone -q --depth=1 --branch dividend-partial-signals "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/dividend-partial-publish || {
+            git init -q /tmp/dividend-partial-publish
+            git -C /tmp/dividend-partial-publish checkout --orphan dividend-partial-signals
+            git -C /tmp/dividend-partial-publish remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          }
+          git -C /tmp/dividend-partial-publish remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          cp signal-publish/partial-signals.json /tmp/dividend-partial-publish/partial-signals.json
+          cd /tmp/dividend-partial-publish
+          git config user.name kis-bot
+          git config user.email kis-bot@users.noreply.github.com
+          git add partial-signals.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'Verified PASS partial screening checkpoint'
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin dividend-partial-signals || { git rebase --abort || true; continue; }
+            if git push origin HEAD:refs/heads/dividend-partial-signals; then exit 0; fi
+            sleep $((attempt * 10))
+          done
+          exit 1
+      - name: Dispatch continuation batch
+        if: always() && inputs.promote_existing != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          chain=${{ inputs.chain_count || '0' }}
+          meta=results/dividend-value/run_metadata.json
+          if [ -f "$meta" ] && python -c "import json; raise SystemExit(0 if json.load(open('$meta')).get('partial') else 1)" && [ "$chain" -lt 6 ]; then
+            next=$((chain + 1))
+            gh workflow run dividend-value-screen.yml --ref "${GITHUB_REF_NAME}" -f max_symbols=500 -f chain_count="$next"
+            echo "Dispatched continuation batch $next"
           fi
       - uses: actions/cache/save@v4
         if: always()

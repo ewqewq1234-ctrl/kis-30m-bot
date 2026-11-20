@@ -1,7 +1,8 @@
-"""Publish only fully scanned PASS candidates; REVIEW rows remain isolated."""
+"""Publish complete snapshots separately from partial screening checkpoints."""
 from collections.abc import Mapping
 from collections import Counter
 from datetime import datetime
+import argparse
 import json
 import os
 from pathlib import Path
@@ -11,9 +12,7 @@ from .data import atomic_json
 
 
 def publication_block_reason(meta, rows, now):
-    """Return a reason to skip publication; never publish a partial/unverified scan."""
-    if now.weekday() != 1:
-        return 'not the scheduled Tuesday KST publication day'
+    """Return a reason to skip complete publication; REVIEW rows are not blockers."""
     if not isinstance(meta, Mapping) or not isinstance(rows, list):
         return 'invalid scan metadata or result rows'
     counts = meta.get('counts')
@@ -53,34 +52,100 @@ def publication_block_reason(meta, rows, now):
     return None
 
 
+def build_snapshot(meta, rows, now, source_sha):
+    counts = meta['counts']
+    return {
+        'scan_date': now.date().isoformat(),
+        'as_of': meta['as_of'],
+        'source_sha': source_sha,
+        'source_run_id': os.environ.get('GITHUB_RUN_ID'),
+        'partial': bool(meta['partial']),
+        'universe_verified': meta['universe_verified'],
+        'universe_total': meta['universe_total'],
+        'processed_total': len(rows),
+        'unprocessed': meta['unprocessed'],
+        'query_failed': meta['query_failed'],
+        'validation_incomplete': bool(counts['REVIEW']),
+        'counts': counts,
+        'candidates': [r for r in rows if r.get('status') == 'PASS'],
+        'review_alerts': {
+            r['code']: r.get('reasons', [])
+            for r in rows
+            if r.get('status') == 'REVIEW' and r.get('code')
+        },
+        'publication_status': 'COMPLETE' if not meta['partial'] else 'PARTIAL_CHECKPOINT',
+        'published_at': now.isoformat(),
+    }
+
+
+def promote_existing_snapshot(input_path, now, source_sha, source_run_id=None):
+    """Promote an existing verified PASS snapshot for a one-day Friday recovery."""
+    snapshot = json.loads(Path(input_path).read_text(encoding='utf-8'))
+    candidates = snapshot.get('candidates')
+    if not isinstance(candidates, list) or not snapshot.get('one_off_partial') is True:
+        raise ValueError('existing snapshot is not a verified partial PASS snapshot')
+    if snapshot.get('universe_verified') is not True or snapshot.get('unprocessed') != 0:
+        raise ValueError('existing snapshot does not satisfy partial recovery integrity')
+    promoted = dict(snapshot)
+    promoted.update({
+        'promotion_date': now.date().isoformat(),
+        'promotion_source_sha': source_sha,
+        'recovery_allowed_date': now.date().isoformat(),
+        'recovery_source_scan_date': snapshot.get('scan_date'),
+        'source_run_id': source_run_id or os.environ.get('GITHUB_RUN_ID'),
+        'publication_status': 'PARTIAL_CHECKPOINT',
+        'published_at': now.isoformat(),
+        'candidates': [r for r in candidates if r.get('status') == 'PASS'],
+    })
+    return promoted
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--promote-existing', metavar='PATH',
+                        help='Promote an existing verified partial PASS snapshot without re-screening')
+    args = parser.parse_args()
+    now = datetime.now(ZoneInfo('Asia/Seoul'))
+    sha = os.environ.get('GITHUB_SHA')
+    if not sha:
+        print('Signal publication safely skipped: GITHUB_SHA is missing')
+        return 0
+    if args.promote_existing:
+        try:
+            snapshot = promote_existing_snapshot(args.promote_existing, now, sha, os.environ.get('GITHUB_RUN_ID'))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f'Signal publication safely skipped: invalid existing snapshot: {exc}')
+            return 1
+        output = Path('signal-publish/signals.json')
+        output.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(output, snapshot)
+        verified = json.loads(output.read_text(encoding='utf-8'))
+        if verified != snapshot:
+            raise RuntimeError('promoted snapshot verification failed')
+        print('Existing verified PASS snapshot promoted as one-day Friday recovery.')
+        return 0
     root = Path('results/dividend-value')
     meta = json.loads((root / 'run_metadata.json').read_text(encoding='utf-8'))
     rows = json.loads((root / 'screening_details.json').read_text(encoding='utf-8'))
     now = datetime.now(ZoneInfo('Asia/Seoul'))
+    sha = os.environ.get('GITHUB_SHA')
+    if not sha:
+        print('Signal publication safely skipped: GITHUB_SHA is missing')
+        return 0
+    snapshot = build_snapshot(meta, rows, now, sha)
+    partial_path = Path('signal-publish/partial-signals.json')
+    if meta.get('partial') is True:
+        partial_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(partial_path, snapshot)
+        print('Verified PASS partial checkpoint preserved separately.')
+        return 0
     reason = publication_block_reason(meta, rows, now)
     if reason:
         print(f'Signal publication safely skipped: {reason}')
         return 0
 
-    atomic_json('signal-publish/signals.json', {
-        'as_of': meta['as_of'],
-        'source_sha': os.environ['GITHUB_SHA'],
-        'scan_date': now.date().isoformat(),
-        'partial': False,
-        'validation_incomplete': meta['counts']['REVIEW'] > 0,
-        'candidates': [r for r in rows if r.get('status') == 'PASS'],
-        'review_alerts': {
-            r['code']: [k for k in ('no_30pct_cut', 'capital_not_impaired')
-                        if r.get('checks', {}).get(k) is False]
-            for r in rows
-            if any(r.get('checks', {}).get(k) is False
-                   for k in ('no_30pct_cut', 'capital_not_impaired'))
-        },
-        'review_count': meta['counts']['REVIEW'],
-        'review_codes': sorted(r['code'] for r in rows if r.get('status') == 'REVIEW' and r.get('code')),
-    })
-    print('Verified Tuesday signal snapshot created.')
+    atomic_json('signal-publish/signals.json', snapshot)
+    print('Verified complete signal snapshot created.')
     return 0
 
 

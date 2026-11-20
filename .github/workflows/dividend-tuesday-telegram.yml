@@ -1,19 +1,19 @@
-name: Tuesday dividend/value Telegram performance report
+name: Monday dividend/value Telegram performance report
 
 on:
   schedule:
-    # KST Tuesday 16:40, retry 18:20 and 21:10 if scan is not finished.
+    # KST Monday 16:40, retry 18:20 and 21:10 if scan is not finished.
     # Deduplication is persisted separately from the trading bot state.
-    - cron: '40 7 * * 2'
-    - cron: '20 9 * * 2'
-    - cron: '10 12 * * 2'
+    - cron: '40 7 * * 1'
+    - cron: '20 9 * * 1'
+    - cron: '10 12 * * 1'
 
 permissions:
   actions: read
   contents: write
 
 concurrency:
-  group: dividend-tuesday-telegram-report
+  group: dividend-monday-telegram-report
   cancel-in-progress: false
 
 jobs:
@@ -30,7 +30,7 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Verify report logic without any external networking
         run: python ci/run_offline_tests.py test_dividend_weekly_report
-      - name: Validate actual KST Tuesday report window
+      - name: Validate actual KST Monday report window
         id: clock
         shell: bash
         run: |
@@ -39,7 +39,7 @@ jobs:
           from datetime import datetime
           from zoneinfo import ZoneInfo
           now = datetime.now(ZoneInfo("Asia/Seoul"))
-          active = now.weekday() == 1 and now.hour >= 16
+          active = now.weekday() == 0 and now.hour >= 16
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"active={str(active).lower()}\n")
               f.write(f"report_date={now.date().isoformat()}\n")
@@ -71,7 +71,7 @@ jobs:
           PY
           )"
           if [[ -z "$run_id" ]]; then
-            echo "Today's scheduled screen is not yet complete; later Tuesday retry will check again."
+            echo "Today's scheduled screen is not yet complete; later Monday retry will check again."
             exit 1
           fi
           mkdir -p results/dividend-value

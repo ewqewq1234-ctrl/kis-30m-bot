@@ -528,13 +528,20 @@ class OneShareTests(unittest.TestCase):
     def test_hourly_weekday_schedule_and_runtime_gate(self):
         workflow = Path(".github/workflows/trade.yml").read_text(encoding="utf-8")
         entries = re.findall(r"- cron: '([^']+)'", workflow)
-        self.assertEqual(entries, ["12 22 * * 0-4","12 23 * * 0-4","12 0 * * 1-5","12 1 * * 1-5","12 2 * * 1-5","12 3 * * 1-5","12 4 * * 1-5","12 5 * * 1-5","42 5 * * 1-5","12 6 * * 1-5","12 7 * * 1-5","12 8 * * 1-5"])
+        self.assertEqual(entries, ["0 21 * * 0-4","12 22 * * 0-4","12 23 * * 0-4","12 0 * * 1-5","12 1 * * 1-5","12 2 * * 1-5","12 3 * * 1-5","12 4 * * 1-5","12 5 * * 1-5","42 5 * * 1-5","12 6 * * 1-5","12 7 * * 1-5","12 8 * * 1-5"])
         self.assertNotIn("timezone:", workflow)
         self.assertIn("id: runtime", workflow)
-        self.assertIn("9 <= now.hour < 17", workflow)
+        self.assertIn("6 <= now.hour < 17", workflow)
         self.assertIn("HOURLY_OPERATION: 'N'", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertNotIn("logical_cron", workflow)
+
+    def test_monday_screening_schedule_and_manual_promotion_mode(self):
+        workflow = Path(".github/workflows/dividend-value-screen.yml").read_text(encoding="utf-8")
+        self.assertIn("- cron: '0 19 * * 0'", workflow)
+        self.assertIn("- cron: '0 21 * * 0'", workflow)
+        self.assertIn("promote_existing", workflow)
+        self.assertIn("Promote existing verified PASS snapshot", workflow)
 
     def test_live_order_is_blocked_after_market_close(self):
         with patch.object(

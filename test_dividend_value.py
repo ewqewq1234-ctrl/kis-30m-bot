@@ -342,13 +342,33 @@ class PublicationTests(unittest.TestCase):
                 self.assertIsNotNone(publication_block_reason(
                     meta, rows, datetime(2026,11,17,6,0)), field)
 
+    def test_existing_verified_partial_snapshot_can_be_promoted_for_recovery(self):
+        from dividend_value.publish import promote_existing_snapshot
+        existing = {
+            'as_of':'2026-11-09','scan_date':'2026-11-10','source_sha':'oldsha',
+            'partial':True,'one_off_partial':True,'universe_verified':True,'unprocessed':0,
+            'query_failed':12,'candidates':[{'code':'000270','status':'PASS'},
+                                           {'code':'000999','status':'REVIEW'}],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d,'signals.json')
+            path.write_text(json.dumps(existing),encoding='utf-8')
+            promoted=promote_existing_snapshot(path,datetime(2026,11,20,14,0),
+                                               'newsha','run-id')
+            self.assertEqual(promoted['scan_date'],'2026-11-10')
+            self.assertEqual(promoted['promotion_date'],'2026-11-20')
+            self.assertEqual(promoted['recovery_allowed_date'],'2026-11-20')
+            self.assertEqual(promoted['source_sha'],'oldsha')
+            self.assertEqual(promoted['promotion_source_sha'],'newsha')
+            self.assertEqual([r['code'] for r in promoted['candidates']],['000270'])
+
     def test_universe_count_mismatch_and_wrong_day_are_blocked(self):
         from dividend_value.publish import publication_block_reason
         with patch.dict('os.environ', {'GITHUB_SHA':'a'*40}):
             self.assertIsNotNone(publication_block_reason(
                 self.complete_meta(), [{'code':'000001','status':'PASS'}],
                 datetime(2026,11,17,6,0)))
-            self.assertIsNotNone(publication_block_reason(
+            self.assertIsNone(publication_block_reason(
                 self.complete_meta(),
                 [{'code':'000001','status':'PASS'},{'code':'000002','status':'FAIL'}],
                 datetime(2026,11,18,6,0)))
