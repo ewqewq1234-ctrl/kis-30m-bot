@@ -271,8 +271,22 @@
   "buy_batch_status": "IN_PROGRESS",
   "buy_batch_scan_date": "2026-11-24",
   "buy_batch_source_sha": "b6d4b2e8a7ec57fc86e38ecd23e5b203b7d9ba01",
-  "buy_permits": {},
-  "buy_attempts": {},
+  "buy_permits": {
+    "001630": {
+      "date": "2026-11-24",
+      "qty": 1,
+      "metadata": {
+        "corp_code": "00149354",
+        "industry": "21",
+        "signal_as_of": "2026-11-23",
+        "source_sha": "b6d4b2e8a7ec57fc86e38ecd23e5b203b7d9ba01",
+        "signal_scan_date": "2026-11-24"
+      }
+    }
+  },
+  "buy_attempts": {
+    "001630": "2026-11-24"
+  },
   "one_off_partial_consumed": "2026-11-10",
   "buy_batch_snapshot_id": "2026-11-10|7db8c0639262cc5f83b32ff0ddac8a79c1f13c70|44680677006|2026-11-20T14:23:27.281037+09:00",
   "buy_batch_completed_at": "2026-11-20T14:46:37.077689+09:00"
