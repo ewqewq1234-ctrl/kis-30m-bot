@@ -290,6 +290,19 @@
       "high": 11110.0,
       "armed": false,
       "exit_intent": null
+    },
+    "243070": {
+      "corp_code": "01159853",
+      "industry": "21",
+      "signal_as_of": "2026-11-23",
+      "source_sha": "b6d4b2e8a7ec57fc86e38ecd23e5b203b7d9ba01",
+      "signal_scan_date": "2026-11-24",
+      "qty": 1,
+      "avg_price": 14740.0,
+      "entry_id": "20261124-DIVIDEND-243070-BUY-DIV entry",
+      "high": 14740.0,
+      "armed": false,
+      "exit_intent": null
     }
   },
   "last_exits": {},
