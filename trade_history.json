@@ -556,6 +556,26 @@
       },
       "confirmed_fill_qty": 2,
       "confirmed_fill_amt": 22220
+    },
+    {
+      "id": "20261124-DIVIDEND-243070-BUY-DIV entry",
+      "strategy": "DIVIDEND",
+      "code": "243070",
+      "side": "BUY",
+      "requested_qty": 1,
+      "status": "INTENT",
+      "created_at": "2026-11-24 14:58:39",
+      "odno": null,
+      "applied_fill_qty": 0,
+      "applied_fill_amount": 0,
+      "sell_cost_basis": 0.0,
+      "strategy_metadata": {
+        "corp_code": "01159853",
+        "industry": "21",
+        "signal_as_of": "2026-11-23",
+        "source_sha": "b6d4b2e8a7ec57fc86e38ecd23e5b203b7d9ba01",
+        "signal_scan_date": "2026-11-24"
+      }
     }
   ]
 }
