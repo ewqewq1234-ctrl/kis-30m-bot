@@ -396,21 +396,57 @@ def get_access_token(force=False):
 
 
 def is_market_open_date(token: str, target_date) -> bool:
+    if target_date.weekday() >= 5:
+        return False
+    
     date_text = target_date.strftime("%Y%m%d")
     cache = load_json(HOLIDAY_CACHE_FILE, {})
     if target_date == now_kst().date() and cache.get("date") == date_text and cache.get("is_open") in (True, False):
         return cache["is_open"]
-    result, _ = api_request("GET", "/uapi/domestic-stock/v1/quotations/chk-holiday", token,
-                            tr_id="CTCA0903R", params={"BASS_DT": date_text, "CTX_AREA_FK": "", "CTX_AREA_NK": ""})
-    entries = result.get("output") or []
-    if isinstance(entries, dict):
-        entries = [entries]
-    for item in entries:
-        if str(item.get("bass_dt")) == date_text and item.get("opnd_yn") in ("Y", "N"):
-            is_open = item["opnd_yn"] == "Y"
-            if target_date == now_kst().date():
-                save_json(HOLIDAY_CACHE_FILE, {"date": date_text, "is_open": is_open})
-            return is_open
+    try:
+        result, _ = api_request("GET", "/uapi/domestic-stock/v1/quotations/chk-holiday", token,
+                                tr_id="CTCA0903R", params={"BASS_DT": date_text, "CTX_AREA_FK": "", "CTX_AREA_NK": ""})
+        entries = result.get("output") or []
+        if isinstance(entries, dict):
+            entries = [entries]
+        for item in entries:
+            if str(item.get("bass_dt")) == date_text and item.get("opnd_yn") in ("Y", "N"):
+                is_open = item["opnd_yn"] == "Y"
+                if target_date == now_kst().date():
+                    save_json(HOLIDAY_CACHE_FILE, {"date": date_text, "is_open": is_open})
+                return is_open
+    except TradeSafetyError:
+        now = now_kst()
+        today = now.date()
+        if target_date > today:
+            raise
+        chart_result, _ = api_request(
+            "GET",
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            token,
+            tr_id="FHKST03010100",
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": "069500",
+                "FID_INPUT_DATE_1": date_text,
+                "FID_INPUT_DATE_2": date_text,
+                "FID_PERIOD_DIV_CODE": "D",
+                "FID_ORG_ADJ_PRC": "0",
+            },
+        )
+        rows = chart_result.get("output2") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        if any(str(row.get("stck_bsop_date")) == date_text for row in rows):
+            if target_date == today:
+                save_json(HOLIDAY_CACHE_FILE, {"date": date_text, "is_open": True})
+            return True
+        if target_date < today:
+            return False
+        if target_date == today and (now.hour, now.minute) >= (9, 5):
+            save_json(HOLIDAY_CACHE_FILE, {"date": date_text, "is_open": False})
+            return False
+        raise
     fail(f"{date_text} 휴장 여부를 검증하지 못했습니다. 평일 추정 주문 금지")
 
 
